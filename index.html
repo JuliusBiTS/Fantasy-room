@@ -203,7 +203,9 @@ const POS_MS       = 80;
 const TABLE_TL      = 3.0;  // table length (head-to-foot)
 const TABLE_TW      = 1.3;  // table width (long-side to long-side)
 const SECRET_CORR_W = 1.25; // secret-room corridor width
-const SECRET_CORR_L = 1.7;  // secret-room corridor length
+const SECRET_CORR_L = 4.8;  // secret-room corridor length — kept long so spatial
+                             // audio (inverse falloff, not a hard cutoff) has
+                             // enough real distance to fade whispers out
 const SECRET_ROOM_W = 2.5;  // secret-room width
 const SECRET_ROOM_D = 2.5;  // secret-room depth
 
@@ -305,8 +307,8 @@ function initScene() {
 }
 
 // ══════════ GEOMETRY HELPERS ══════════
-function mat(color, emissive=0x000000, emI=0, rough=0.95, metal=0) {
-  return new THREE.MeshStandardMaterial({color, emissive, emissiveIntensity:emI, roughness:rough, metalness:metal});
+function mat(color, emissive=0x000000, emI=0, rough=0.95, metal=0, side=THREE.FrontSide) {
+  return new THREE.MeshStandardMaterial({color, emissive, emissiveIntensity:emI, roughness:rough, metalness:metal, side});
 }
 
 function octVerts() {
@@ -627,14 +629,18 @@ function buildTable() {
     mat(GOLD,GOLD,1.0,0.4,0.1));
   mapRim.rotation.x=-Math.PI/2; mapRim.position.set(0,TY-0.01,0); scene.add(mapRim);
 
-  // DM privacy screen — low gold-framed panel at the head of the table
+  // DM privacy screen — low gold-framed panel at the head of the table.
+  // The panel is wide along local Z, so the lean must rotate around Z (the
+  // axis running along its own width) for a uniform tilt — rotating around
+  // X (perpendicular to the width) instead sweeps each point along the
+  // width by a different amount, which is what produced the diagonal skew.
   const screenGrp=new THREE.Group();
-  const panel=new THREE.Mesh(new THREE.BoxGeometry(TW*0.7,0.34,0.025),mat(WOOD_DARK,0,0,0.5,0.05));
+  const panel=new THREE.Mesh(new THREE.BoxGeometry(0.025,0.34,TW*0.7),mat(WOOD_DARK,0,0,0.5,0.05));
   panel.position.set(0,0.17,0); screenGrp.add(panel);
-  const panelEdge=new THREE.Mesh(new THREE.BoxGeometry(TW*0.7+0.02,0.02,0.03),mat(GOLD,GOLD,1.6,0));
+  const panelEdge=new THREE.Mesh(new THREE.BoxGeometry(0.03,0.02,TW*0.7+0.02),mat(GOLD,GOLD,1.6,0));
   panelEdge.position.set(0,0.34,0); screenGrp.add(panelEdge);
   screenGrp.position.set(-TL/2+0.14,TY+0.05,0);
-  screenGrp.rotation.y=Math.PI/2; screenGrp.rotation.x=-0.18;
+  screenGrp.rotation.z=-0.18; // gentle, uniform lean back toward the DM
   scene.add(screenGrp);
 
   // seats — DM at the head (slightly elevated), four players along the long sides, one at the foot
@@ -678,12 +684,15 @@ function buildSecretWing() {
   const tangent=[Math.cos(doorWall.ry), -Math.sin(doorWall.ry)];
   const jambW=(doorWall.width-gapW)/2;
 
+  // Double-sided: unlike the rest of the perimeter walls, these jambs are
+  // walkable-past on both faces (main room on one side, corridor on the
+  // other), so a single-sided material would vanish from one direction.
   [-1,1].forEach(side=>{
     const off=(gapW/2+jambW/2)*side;
     const jx=doorWall.mid[0]+tangent[0]*off, jz=doorWall.mid[1]+tangent[1]*off;
-    const lower=new THREE.Mesh(new THREE.PlaneGeometry(jambW-0.03,WALL_H/3),mat(WOOD_CREAM,0,0,0.6,0.03));
+    const lower=new THREE.Mesh(new THREE.PlaneGeometry(jambW-0.03,WALL_H/3),mat(WOOD_CREAM,0,0,0.6,0.03,THREE.DoubleSide));
     lower.position.set(jx,WALL_H/6,jz); lower.rotation.y=doorWall.ry; scene.add(lower);
-    const upper=new THREE.Mesh(new THREE.PlaneGeometry(jambW-0.03,WALL_H*2/3),mat(STONE_WALL,0x000000,0,0.6,0.02));
+    const upper=new THREE.Mesh(new THREE.PlaneGeometry(jambW-0.03,WALL_H*2/3),mat(STONE_WALL,0x000000,0,0.6,0.02,THREE.DoubleSide));
     upper.position.set(jx,WALL_H*2/3,jz); upper.rotation.y=doorWall.ry; scene.add(upper);
   });
   const lintel=new THREE.Mesh(new THREE.BoxGeometry(gapW+0.34,0.16,0.16),mat(STONE_TRIM,0,0,0.55,0.05));
