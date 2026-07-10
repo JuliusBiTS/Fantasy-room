@@ -410,6 +410,7 @@ function buildRoom() {
   buildLibraryWall();
   buildFireplace(-OCT_HW+0.03, 0, Math.PI/2);
   buildStarCharts();
+  buildPortraits();
 }
 
 function buildDome() {
@@ -578,6 +579,43 @@ function buildStarCharts() {
       pts.forEach(p=>{ ctx.fillStyle='rgba(255,240,210,0.85)'; ctx.beginPath(); ctx.arc(p[0],p[1],2.2,0,Math.PI*2); ctx.fill(); });
     });
   });
+}
+
+// Player portraits — gold-framed, mounted on the three empty chamfer walls
+// (SE, SW, NW — the ones not already claimed by the map, library or hearth).
+function buildPortraits() {
+  buildPortrait(3, 'portraits/Almithara.jpg', 900/1125, 'ALMITHARA');
+  buildPortrait(5, 'portraits/Araviel.jpg', 767/1150, 'ARAVIEL');
+  buildPortrait(7, 'portraits/Zahra.jpg', 861/1150, 'ZAHRA');
+}
+
+function buildPortrait(wallIndex, url, aspect, name) {
+  const w = octWallDefs()[wallIndex];
+  const H = 1.35, W = H*aspect;
+  const y = 1.75;
+  const nx = Math.sin(w.ry), nz = Math.cos(w.ry);
+
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(W+0.16,H+0.16,0.06),mat(WOOD_DARK,0,0,0.5,0.08));
+  frame.position.set(w.mid[0]+nx*0.03, y, w.mid[1]+nz*0.03); frame.rotation.y=w.ry; scene.add(frame);
+  const edge = new THREE.Mesh(new THREE.BoxGeometry(W+0.22,H+0.22,0.03),mat(GOLD,GOLD,1.4,0));
+  edge.position.set(w.mid[0]+nx*0.02, y, w.mid[1]+nz*0.02); edge.rotation.y=w.ry; scene.add(edge);
+
+  const tex = new THREE.TextureLoader().load(url);
+  const imgOffset = new THREE.Vector3(0,0,0.065).applyEuler(new THREE.Euler(0,w.ry,0));
+  const img = new THREE.Mesh(new THREE.PlaneGeometry(W,H), new THREE.MeshBasicMaterial({map:tex}));
+  img.position.set(w.mid[0]+imgOffset.x, y, w.mid[1]+imgOffset.z); img.rotation.y=w.ry; scene.add(img);
+
+  const nc=document.createElement('canvas'); nc.width=320; nc.height=64;
+  const nctx=nc.getContext('2d');
+  nctx.fillStyle='rgba(10,8,4,0.85)'; nctx.fillRect(0,0,320,64);
+  nctx.strokeStyle='rgba(224,184,76,0.6)'; nctx.lineWidth=2; nctx.strokeRect(2,2,316,60);
+  nctx.fillStyle='#e0b84c'; nctx.font='bold 26px Cinzel,serif'; nctx.textAlign='center'; nctx.textBaseline='middle';
+  nctx.fillText(name, 160, 33);
+  const plateOffset = new THREE.Vector3(0,0,0.045).applyEuler(new THREE.Euler(0,w.ry,0));
+  const plate = new THREE.Mesh(new THREE.PlaneGeometry(0.55,0.11),
+    new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(nc), transparent:true}));
+  plate.position.set(w.mid[0]+plateOffset.x, y-H/2-0.14, w.mid[1]+plateOffset.z);
+  plate.rotation.y=w.ry; scene.add(plate);
 }
 
 // ══════════ FURNITURE ══════════
