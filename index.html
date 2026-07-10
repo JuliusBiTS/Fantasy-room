@@ -78,6 +78,8 @@ body.locked #crosshair{opacity:1}
 .pi::placeholder{color:rgba(58,160,196,.25)}
 .pb{width:100%;background:transparent;border:1px solid rgba(58,160,196,.28);color:rgba(58,160,196,.7);font-family:var(--fm);font-size:11px;letter-spacing:2px;padding:7px;cursor:pointer;transition:all .15s;text-transform:uppercase;margin-bottom:5px}
 .pb:hover{background:rgba(58,160,196,.1);border-color:var(--m);color:var(--m)}
+.pb.active{border-color:var(--r);color:var(--r);box-shadow:0 0 10px rgba(209,73,91,.3)}
+.pb.active:hover{background:rgba(209,73,91,.1);border-color:var(--r);color:var(--r)}
 .mstat{font-size:9px;letter-spacing:1px;color:rgba(58,160,196,.45);text-align:center;padding:6px 0 2px}
 .mstat.on{color:var(--g)}
 .ifw{margin-top:8px}
@@ -161,6 +163,10 @@ canvas{display:block}
 <div id="gm" style="display:none">
   <div class="gm-head">🧭 DM-Pult</div>
   <div class="gm-sec">
+    <div class="gstt">Spieler-Steuerung</div>
+    <button class="pb" id="mute-all-btn">🔇 Alle stummschalten</button>
+  </div>
+  <div class="gm-sec">
     <div class="gstt">Tabletopaudio</div>
     <input class="pi" id="tta-url" type="text" placeholder="https://tabletopaudio.com/..."/>
     <button class="pb" id="tta-btn">► Laden</button>
@@ -197,6 +203,9 @@ const POS_MS       = 80;
 const TABLE_TL      = 3.0;  // table length (head-to-foot)
 const TABLE_TW      = 1.3;  // table width (long-side to long-side)
 const SECRET_CORR_W = 1.25; // secret-room corridor width
+const SECRET_CORR_L = 1.7;  // secret-room corridor length
+const SECRET_ROOM_W = 2.5;  // secret-room width
+const SECRET_ROOM_D = 2.5;  // secret-room depth
 
 // ══════════ PALETTE ══════════
 const GOLD   = 0xe0b84c; // gilt trim, primary accent
@@ -216,6 +225,7 @@ const STONE_BLUE=0x3d5670; // fireplace stone
 let renderer, scene, camera, clock;
 let particleMesh, emberMesh, starSphere;
 let cLight, mLight, hearthLight;
+let doorWallInfo; // NE-chamfer doorway to the secret room — used for the movement passage
 
 // player
 const playerPos = new THREE.Vector3(0, EYE_H, 3.2);
@@ -230,6 +240,8 @@ const JUMP_FORCE = 6;
 let agoraClient = null, localAudio = null, localVideo = null, screenAudio = null;
 let dataStreamId = null, localUID = null, localName = '', isDM = false;
 let micMuted = false, camOff = false, streaming = false;
+let forceMuted = false, preForceMuteState = false; // players: muted by the DM, cannot self-unmute
+let allMuted = false; // DM: current broadcast mute-all state
 const users = {};
 let audioCtx = null;
 
@@ -284,6 +296,7 @@ function initScene() {
   cLight = new THREE.PointLight(GOLD, 1.3, 9); cLight.position.set(0,2.7,0.3); cLight.castShadow=true; scene.add(cLight);
   mLight = new THREE.PointLight(TEAL, 0.55, 9); mLight.position.set(0,WALL_H+1.2,0); scene.add(mLight);
 
+  doorWallInfo = octWallDefs()[1]; // NE chamfer — the secret-room doorway
   buildRoom();
   buildFurniture();
   buildParticles();
@@ -660,7 +673,7 @@ function buildTable() {
 // A hidden wing behind the library, reached through a gap carved into the
 // NE chamfer wall — a small violet chamber for two to talk unheard.
 function buildSecretWing() {
-  const doorWall = octWallDefs()[1]; // NE chamfer
+  const doorWall = doorWallInfo; // NE chamfer
   const gapW = SECRET_CORR_W, archH = 2.05;
   const tangent=[Math.cos(doorWall.ry), -Math.sin(doorWall.ry)];
   const jambW=(doorWall.width-gapW)/2;
@@ -696,7 +709,7 @@ function buildSecretWing() {
   wing.rotation.y=doorWall.ry+Math.PI;
   scene.add(wing);
 
-  const CORR_L=1.7;
+  const CORR_L=SECRET_CORR_L;
   const cf=new THREE.Mesh(new THREE.PlaneGeometry(gapW,CORR_L),mat(STONE,0,0,0.6,0.02));
   cf.rotation.x=-Math.PI/2; cf.position.set(0,0,CORR_L/2); wing.add(cf);
   [-1,1].forEach(side=>{
@@ -717,7 +730,7 @@ function buildSecretWing() {
 }
 
 function buildSecretRoom(wing, corrL, corrW) {
-  const SW=2.5, SD=2.5, SH=2.3, TY=0.7;
+  const SW=SECRET_ROOM_W, SD=SECRET_ROOM_D, SH=2.3, TY=0.7;
   const cz = corrL + SD/2;
   const VIOLET=0x2c1f42, VIOLET_TRIM=0x9a6fd8;
 
@@ -972,12 +985,31 @@ function animate() {
     if(keys['KeyA']||keys['ArrowLeft'])  playerPos.addScaledVector(rt,-spd);
     if(keys['KeyD']||keys['ArrowRight']) playerPos.addScaledVector(rt, spd);
 
-    const margin=0.45;
-    playerPos.x=Math.max(-(OCT_HW-margin),Math.min(OCT_HW-margin,playerPos.x));
-    playerPos.z=Math.max(-(OCT_HW-margin),Math.min(OCT_HW-margin,playerPos.z));
-    const limit=2*OCT_HW-OCT_CH-margin;
-    const s=Math.abs(playerPos.x)+Math.abs(playerPos.z);
-    if(s>limit){ const k=limit/s; playerPos.x*=k; playerPos.z*=k; }
+    // is the player at/through the secret-room doorway? clamp within that
+    // passage instead of the main room so the archway is walkable, not a wall.
+    const th=doorWallInfo.ry+Math.PI, dc=Math.cos(th), ds=Math.sin(th);
+    const dox=playerPos.x-doorWallInfo.mid[0], doz=playerPos.z-doorWallInfo.mid[1];
+    const localX = dox*dc - doz*ds, localZ = dox*ds + doz*dc;
+    const doorHalf = (localZ < SECRET_CORR_L ? SECRET_CORR_W/2 : SECRET_ROOM_W/2) + 0.15;
+
+    // Trigger well before the main room's own clamp margin (0.45m, ~0.32m
+    // perpendicular to a 45°-chamfer wall) would otherwise pin the player
+    // short of this zone and deadlock them just outside the doorway.
+    if (localZ > -1.0 && Math.abs(localX) < doorHalf) {
+      const maxLz = SECRET_CORR_L + SECRET_ROOM_D - 0.3;
+      const clampedLz = Math.min(maxLz, localZ);
+      const maxLx = (clampedLz < SECRET_CORR_L ? SECRET_CORR_W/2-0.15 : SECRET_ROOM_W/2-0.3);
+      const clampedLx = Math.max(-maxLx, Math.min(maxLx, localX));
+      playerPos.x = doorWallInfo.mid[0] + clampedLx*dc + clampedLz*ds;
+      playerPos.z = doorWallInfo.mid[1] - clampedLx*ds + clampedLz*dc;
+    } else {
+      const margin=0.45;
+      playerPos.x=Math.max(-(OCT_HW-margin),Math.min(OCT_HW-margin,playerPos.x));
+      playerPos.z=Math.max(-(OCT_HW-margin),Math.min(OCT_HW-margin,playerPos.z));
+      const limit=2*OCT_HW-OCT_CH-margin;
+      const s=Math.abs(playerPos.x)+Math.abs(playerPos.z);
+      if(s>limit){ const k=limit/s; playerPos.x*=k; playerPos.z*=k; }
+    }
 
     // gravity + jump
     velY += GRAVITY * dt;
@@ -1137,19 +1169,37 @@ async function initAgora(appId, room, myName, asDM) {
         const lbl=users[uid].grp?.children.find(c=>c.userData.bill&&c.geometry?.parameters?.width>1);
         if(lbl){lbl.material.map=nameTex(msg.name,msg.isDM?'#3aa0c4':'#e0b84c');lbl.material.needsUpdate=true;}
       }
-    }catch(_){}
+      if(msg.type==='forceMute'){
+        // Only players act on this — the DM never receives their own broadcast.
+        if(msg.value && !forceMuted){
+          preForceMuteState = micMuted;
+          forceMuted = true;
+          micMuted = true;
+          if(localAudio) localAudio.setEnabled(false);
+          setMicUI();
+        } else if(!msg.value && forceMuted){
+          forceMuted = false;
+          micMuted = preForceMuteState;
+          if(localAudio) localAudio.setEnabled(!micMuted);
+          setMicUI();
+        }
+      }
+    }catch(e){ console.warn('stream-message parse failed:', e, 'from uid', uid); }
   });
 
   localUID=Math.floor(Math.random()*900000)+10000;
   await agoraClient.join(appId,room,null,localUID);
 
-  // Create data stream with retry
+  // Create data stream with retry — reliable so position packets are retransmitted
+  // instead of silently vanishing on a flaky connection (unordered is fine, only
+  // the latest position matters).
   for (let attempt=0; attempt<3; attempt++) {
     try {
-      dataStreamId=await agoraClient.createDataStream({ordered:false,reliable:false});
+      dataStreamId=await agoraClient.createDataStream({ordered:false,reliable:true});
+      console.log('Position data stream ready, id', dataStreamId);
       break;
     } catch(e) {
-      if(attempt===2) console.warn('DataStream failed after 3 attempts:', e);
+      if(attempt===2) console.warn('DataStream failed after 3 attempts — remote avatars will not move for this client:', e);
       await new Promise(r=>setTimeout(r,300));
     }
   }
@@ -1177,6 +1227,7 @@ async function initAgora(appId, room, myName, asDM) {
   setInterval(broadcastPos, 50);
 }
 
+let posSendFailLogged = false;
 function broadcastPos(){
   if(!dataStreamId||!agoraClient)return;
   try{
@@ -1187,14 +1238,19 @@ function broadcastPos(){
       users[localUID].grp.position.z=playerPos.z;
       users[localUID].grp.rotation.y=yaw+Math.PI;
     }
-  }catch(_){}
+  }catch(e){
+    // Log once, not 20x/sec — a persistent failure here means this client's
+    // avatar will appear frozen for everyone else, even though their own
+    // audio/video still works fine (those are separate media tracks).
+    if(!posSendFailLogged){ console.warn('sendStreamMessage(pos) failed — other players will not see you move:', e); posSendFailLogged=true; }
+  }
 }
 
 function sendName(name,asDM){
   if(!dataStreamId)return;
   setTimeout(()=>{
     try{agoraClient.sendStreamMessage(dataStreamId,
-      new TextEncoder().encode(JSON.stringify({type:'name',name,isDM:asDM})));}catch(_){}
+      new TextEncoder().encode(JSON.stringify({type:'name',name,isDM:asDM})));}catch(e){ console.warn('sendStreamMessage(name) failed:', e); }
   },300);
 }
 
@@ -1260,12 +1316,37 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
   }
 });
 
-document.getElementById('btn-mic').addEventListener('click',async()=>{
-  if(!localAudio)return; ensureACtx();
-  micMuted=!micMuted; await localAudio.setEnabled(!micMuted);
+function setMicUI(){
   const b=document.getElementById('btn-mic');
-  b.querySelector('span').textContent=micMuted?'Stumm':'Mic';
-  b.classList.toggle('off',micMuted);
+  if(forceMuted){
+    b.querySelector('span').textContent='Stumm (DM)';
+    b.classList.add('off');
+    b.title='Von der Spielleitung stummgeschaltet';
+  } else {
+    b.querySelector('span').textContent=micMuted?'Stumm':'Mic';
+    b.classList.toggle('off',micMuted);
+    b.title='';
+  }
+}
+
+document.getElementById('btn-mic').addEventListener('click',async()=>{
+  if(!localAudio)return;
+  if(forceMuted)return; // locked by the DM — cannot self-unmute
+  ensureACtx();
+  micMuted=!micMuted; await localAudio.setEnabled(!micMuted);
+  setMicUI();
+});
+
+document.getElementById('mute-all-btn').addEventListener('click',()=>{
+  if(!dataStreamId||!agoraClient)return;
+  allMuted=!allMuted;
+  try{
+    agoraClient.sendStreamMessage(dataStreamId,
+      new TextEncoder().encode(JSON.stringify({type:'forceMute',value:allMuted})));
+  }catch(e){ console.warn('forceMute broadcast failed:', e); }
+  const b=document.getElementById('mute-all-btn');
+  b.textContent = allMuted ? '🔊 Stummschaltung aufheben' : '🔇 Alle stummschalten';
+  b.classList.toggle('active',allMuted);
 });
 
 document.getElementById('btn-cam').addEventListener('click',async()=>{
