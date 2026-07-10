@@ -818,6 +818,20 @@ function buildSecretRoom(wing, corrL, corrW) {
     trim.position.set(lx,SH-0.15,cz+lz); trim.rotation.y=ry; wing.add(trim);
   });
 
+  // step walls where the room (SW wide) meets the narrower corridor (corrW) —
+  // the room's own left/right walls start flush at the entrance, but that
+  // leaves the strip between the corridor's edge and the room's full width
+  // completely unwalled right at the threshold. This is what was actually
+  // missing, distinct from the corridor/room ceiling-height gap fixed earlier.
+  [-1,1].forEach(side=>{
+    const stepW = SW/2 - corrW/2;
+    const stepX = side*(corrW/2 + stepW/2);
+    const step=new THREE.Mesh(new THREE.PlaneGeometry(stepW,SH),mat(VIOLET,0,0,0.6,0.05,THREE.DoubleSide));
+    step.position.set(stepX,SH/2,corrL); wing.add(step);
+    const stepTrim=new THREE.Mesh(new THREE.BoxGeometry(stepW-0.05,0.04,0.03),mat(VIOLET_TRIM,VIOLET_TRIM,1.4,0));
+    stepTrim.position.set(stepX,SH-0.15,corrL); wing.add(stepTrim);
+  });
+
   // heavy curtains half-covering the entrance
   [-1,1].forEach(side=>{
     const curtain=new THREE.Mesh(new THREE.PlaneGeometry(0.5,SH-0.15),mat(0x1c1228,0,0,0.85));
