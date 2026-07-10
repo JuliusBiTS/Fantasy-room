@@ -389,8 +389,12 @@ function buildRoom() {
   fl.rotation.x=-Math.PI/2; fl.receiveShadow=true; scene.add(fl);
   const g1=new THREE.GridHelper(OCT_HW*2,16,STONE_TRIM,0xB5A06C); g1.position.y=-0.01; scene.add(g1);
 
-  // walls — cream wood wainscot in the lower third, marble above, gilt seam & baseboard
+  // walls — cream wood wainscot in the lower third, marble above, gilt seam & baseboard.
+  // Skip the doorway wall (index 1) entirely — buildSecretWing() builds its own
+  // jamb+lintel there. Leaving this full panel in place used to overlap it
+  // almost exactly, causing z-fighting / one-sided visibility gaps at a distance.
   octWallDefs().forEach(w=>{
+    if(w.index===1) return;
     const nx=Math.sin(w.ry), nz=Math.cos(w.ry);
     const lower=new THREE.Mesh(new THREE.PlaneGeometry(w.width-0.05, WALL_H/3), mat(WOOD_CREAM,0,0,0.6,0.03));
     lower.position.set(w.mid[0],WALL_H/6,w.mid[1]); lower.rotation.y=w.ry; lower.receiveShadow=true; scene.add(lower);
@@ -725,12 +729,16 @@ function buildSecretWing() {
   // Double-sided: unlike the rest of the perimeter walls, these jambs are
   // walkable-past on both faces (main room on one side, corridor on the
   // other), so a single-sided material would vanish from one direction.
+  // Full jambW (no inset) so the inner edge lands exactly at gapW/2, flush
+  // against the corridor's own side wall — the old "-0.03" reveal left a
+  // real 1.5cm gap there that a distant grazing ray could slip through,
+  // showing the dome beyond as if a chunk of wall were missing.
   [-1,1].forEach(side=>{
     const off=(gapW/2+jambW/2)*side;
     const jx=doorWall.mid[0]+tangent[0]*off, jz=doorWall.mid[1]+tangent[1]*off;
-    const lower=new THREE.Mesh(new THREE.PlaneGeometry(jambW-0.03,WALL_H/3),mat(WOOD_CREAM,0,0,0.6,0.03,THREE.DoubleSide));
+    const lower=new THREE.Mesh(new THREE.PlaneGeometry(jambW,WALL_H/3),mat(WOOD_CREAM,0,0,0.6,0.03,THREE.DoubleSide));
     lower.position.set(jx,WALL_H/6,jz); lower.rotation.y=doorWall.ry; scene.add(lower);
-    const upper=new THREE.Mesh(new THREE.PlaneGeometry(jambW-0.03,WALL_H*2/3),mat(STONE_WALL,0x000000,0,0.6,0.02,THREE.DoubleSide));
+    const upper=new THREE.Mesh(new THREE.PlaneGeometry(jambW,WALL_H*2/3),mat(STONE_WALL,0x000000,0,0.6,0.02,THREE.DoubleSide));
     upper.position.set(jx,WALL_H*2/3,jz); upper.rotation.y=doorWall.ry; scene.add(upper);
   });
   const lintel=new THREE.Mesh(new THREE.BoxGeometry(gapW+0.34,0.16,0.16),mat(STONE_TRIM,0,0,0.55,0.05));
@@ -756,17 +764,28 @@ function buildSecretWing() {
   wing.rotation.y=doorWall.ry+Math.PI;
   scene.add(wing);
 
+  // Extended slightly past the threshold (into negative local Z, back toward
+  // the main room) so the corridor walls overlap the jamb walls at the
+  // corner instead of meeting them edge-to-edge.
+  // Full WALL_H tall, matching the jamb's height exactly — the corridor used
+  // to be shorter (WALL_H*0.75) than the main room's walls, so any ray that
+  // cleared the corridor's own low ceiling while still within the passage's
+  // narrow width had genuinely open air above it, straight up into the dome.
+  // That wasn't a crack to seal, it was a real height gap between the two
+  // structures.
+  const OVERLAP=0.2;
   const CORR_L=SECRET_CORR_L;
-  const cf=new THREE.Mesh(new THREE.PlaneGeometry(gapW,CORR_L),mat(STONE,0,0,0.6,0.02));
-  cf.rotation.x=-Math.PI/2; cf.position.set(0,0,CORR_L/2); wing.add(cf);
+  const spanL=CORR_L+OVERLAP, spanMid=(CORR_L-OVERLAP)/2;
+  const cf=new THREE.Mesh(new THREE.PlaneGeometry(gapW,spanL),mat(STONE,0,0,0.6,0.02));
+  cf.rotation.x=-Math.PI/2; cf.position.set(0,0,spanMid); wing.add(cf);
   [-1,1].forEach(side=>{
-    const w=new THREE.Mesh(new THREE.PlaneGeometry(CORR_L,WALL_H*0.75),mat(STONE_WALL,0x000000,0,0.6,0.02));
-    w.position.set(side*gapW/2,WALL_H*0.375,CORR_L/2);
+    const w=new THREE.Mesh(new THREE.PlaneGeometry(spanL,WALL_H),mat(STONE_WALL,0x000000,0,0.6,0.02));
+    w.position.set(side*gapW/2,WALL_H/2,spanMid);
     w.rotation.y = side>0 ? -Math.PI/2 : Math.PI/2;
     wing.add(w);
   });
-  const cc=new THREE.Mesh(new THREE.PlaneGeometry(gapW,CORR_L),mat(0x1c1428,0,0,0.7));
-  cc.rotation.x=Math.PI/2; cc.position.set(0,WALL_H*0.75,CORR_L/2); wing.add(cc);
+  const cc=new THREE.Mesh(new THREE.PlaneGeometry(gapW,spanL),mat(0x1c1428,0,0,0.7));
+  cc.rotation.x=Math.PI/2; cc.position.set(0,WALL_H,spanMid); wing.add(cc);
 
   const torch=new THREE.PointLight(0x9a6fd8,0.9,5);
   torch.position.set(0,1.65,CORR_L*0.55); wing.add(torch);
@@ -777,7 +796,9 @@ function buildSecretWing() {
 }
 
 function buildSecretRoom(wing, corrL, corrW) {
-  const SW=SECRET_ROOM_W, SD=SECRET_ROOM_D, SH=2.3, TY=0.7;
+  // Same height as the corridor/main room (WALL_H) — a shorter room ceiling
+  // here reintroduces the exact same kind of gap one level further in.
+  const SW=SECRET_ROOM_W, SD=SECRET_ROOM_D, SH=WALL_H, TY=0.7;
   const cz = corrL + SD/2;
   const VIOLET=0x2c1f42, VIOLET_TRIM=0x9a6fd8;
 
