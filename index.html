@@ -240,7 +240,7 @@ const JUMP_FORCE = 6;
 
 // ══════════ AGORA STATE ══════════
 let agoraClient = null, localAudio = null, localVideo = null, screenAudio = null;
-let dataStreamId = null, localUID = null, localName = '', isDM = false;
+let localUID = null, localName = '', isDM = false;
 let micMuted = false, camOff = false, streaming = false;
 let forceMuted = false, preForceMuteState = false; // players: muted by the DM, cannot self-unmute
 let allMuted = false; // DM: current broadcast mute-all state
@@ -1272,20 +1272,6 @@ async function initAgora(appId, room, myName, asDM) {
   localUID=Math.floor(Math.random()*900000)+10000;
   await agoraClient.join(appId,room,null,localUID);
 
-  // Create data stream with retry — reliable so position packets are retransmitted
-  // instead of silently vanishing on a flaky connection (unordered is fine, only
-  // the latest position matters).
-  for (let attempt=0; attempt<3; attempt++) {
-    try {
-      dataStreamId=await agoraClient.createDataStream({ordered:false,reliable:true});
-      console.log('Position data stream ready, id', dataStreamId);
-      break;
-    } catch(e) {
-      if(attempt===2) console.warn('DataStream failed after 3 attempts — remote avatars will not move for this client:', e);
-      await new Promise(r=>setTimeout(r,300));
-    }
-  }
-
   [localAudio,localVideo]=await AgoraRTC.createMicrophoneAndCameraTracks(
     {AEC:true,ANS:true,AGC:true},{encoderConfig:'480p_1',facingMode:'user'});
   await agoraClient.publish([localAudio,localVideo]);
@@ -1310,11 +1296,14 @@ async function initAgora(appId, room, myName, asDM) {
 }
 
 let posSendFailLogged = false;
-function broadcastPos(){
-  if(!dataStreamId||!agoraClient)return;
+async function broadcastPos(){
+  if(!agoraClient)return;
   try{
-    agoraClient.sendStreamMessage(dataStreamId,
-      new TextEncoder().encode(JSON.stringify({type:'pos',x:playerPos.x,z:playerPos.z,yaw})));
+    // This SDK build silently drops the message if the returned promise is
+    // never awaited — no throw, no rejection, it just never reaches anyone.
+    // unreliable: high-frequency (20/s), only the latest position matters.
+    await agoraClient.sendStreamMessage(
+      new TextEncoder().encode(JSON.stringify({type:'pos',x:playerPos.x,z:playerPos.z,yaw})), false);
     if(users[localUID]?.grp){
       users[localUID].grp.position.x=playerPos.x;
       users[localUID].grp.position.z=playerPos.z;
@@ -1329,10 +1318,10 @@ function broadcastPos(){
 }
 
 function sendName(name,asDM){
-  if(!dataStreamId)return;
-  setTimeout(()=>{
-    try{agoraClient.sendStreamMessage(dataStreamId,
-      new TextEncoder().encode(JSON.stringify({type:'name',name,isDM:asDM})));}catch(e){ console.warn('sendStreamMessage(name) failed:', e); }
+  if(!agoraClient)return;
+  setTimeout(async ()=>{
+    try{await agoraClient.sendStreamMessage(
+      new TextEncoder().encode(JSON.stringify({type:'name',name,isDM:asDM})), true);}catch(e){ console.warn('sendStreamMessage(name) failed:', e); }
   },300);
 }
 
@@ -1419,12 +1408,12 @@ document.getElementById('btn-mic').addEventListener('click',async()=>{
   setMicUI();
 });
 
-document.getElementById('mute-all-btn').addEventListener('click',()=>{
-  if(!dataStreamId||!agoraClient)return;
+document.getElementById('mute-all-btn').addEventListener('click',async()=>{
+  if(!agoraClient)return;
   allMuted=!allMuted;
   try{
-    agoraClient.sendStreamMessage(dataStreamId,
-      new TextEncoder().encode(JSON.stringify({type:'forceMute',value:allMuted})));
+    await agoraClient.sendStreamMessage(
+      new TextEncoder().encode(JSON.stringify({type:'forceMute',value:allMuted})), true);
   }catch(e){ console.warn('forceMute broadcast failed:', e); }
   const b=document.getElementById('mute-all-btn');
   b.textContent = allMuted ? '🔊 Stummschaltung aufheben' : '🔇 Alle stummschalten';
