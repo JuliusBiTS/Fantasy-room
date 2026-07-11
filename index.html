@@ -1193,7 +1193,7 @@ async function initAgora(appId, room, myName, asDM) {
       const pz = pendingPos[uid]?.z ?? (Math.random()-.5)*1.5;
       const pyaw = pendingPos[uid]?.yaw ?? 0;
       grp.position.set(px,0,pz);
-      users[uid]={name:'User-'+uid,grp,vidMesh,targetX:px,targetZ:pz,targetYaw:pyaw};
+      users[uid]={name:'User-'+uid,grp,vidMesh,targetX:px,targetZ:pz,targetYaw:pyaw,isStreamingMusic:!!pendingPos[uid]?.music};
       delete pendingPos[uid];
     }
     if (mediaType==='video') {
@@ -1208,13 +1208,19 @@ async function initAgora(appId, room, myName, asDM) {
     }
     if (mediaType==='audio') {
       ensureACtx();
-      if (!users[uid].hasAudio) {
-        // First audio track = microphone → spatial
+      // A user's very first audio track is always their mic (mic+cam publish
+      // together at join, before any music share is possible) — spatial.
+      // Anything after that, or anything that arrives while we already know
+      // this uid is streaming music (isStreamingMusic, carried on every 'pos'
+      // broadcast so even a late joiner picks it up within ~50ms), is the
+      // shared tab/screen audio — ambient, same volume everywhere, not tied
+      // to their avatar position. Relying on "first vs second" alone breaks
+      // for anyone who joins after the DM already started sharing music.
+      if (!users[uid].hasAudio && !users[uid].isStreamingMusic) {
         users[uid].audioTrack = ru.audioTrack;
         users[uid].hasAudio = true;
         wireSpatial(uid, ru.audioTrack);
       } else {
-        // Second audio track = screen share audio → ambient (no position)
         users[uid].screenAudioTrack = ru.audioTrack;
         wireAmbient(ru.audioTrack);
       }
@@ -1241,9 +1247,10 @@ async function initAgora(appId, room, myName, asDM) {
           users[uid].targetX=msg.x;
           users[uid].targetZ=msg.z;
           users[uid].targetYaw=msg.yaw;
+          users[uid].isStreamingMusic=!!msg.music;
         } else {
           // User not yet created — buffer it
-          pendingPos[uid]={x:msg.x,z:msg.z,yaw:msg.yaw};
+          pendingPos[uid]={x:msg.x,z:msg.z,yaw:msg.yaw,music:!!msg.music};
         }
       }
       if(msg.type==='name'&&users[uid]){
@@ -1302,8 +1309,11 @@ async function broadcastPos(){
     // This SDK build silently drops the message if the returned promise is
     // never awaited — no throw, no rejection, it just never reaches anyone.
     // unreliable: high-frequency (20/s), only the latest position matters.
+    // 'music' rides along on every position update so any client — including
+    // one that joins mid-session — learns within ~50ms whether this uid is
+    // currently sharing tab audio, without a separate message/race to manage.
     await agoraClient.sendStreamMessage(
-      new TextEncoder().encode(JSON.stringify({type:'pos',x:playerPos.x,z:playerPos.z,yaw})), false);
+      new TextEncoder().encode(JSON.stringify({type:'pos',x:playerPos.x,z:playerPos.z,yaw,music:streaming})), false);
     if(users[localUID]?.grp){
       users[localUID].grp.position.x=playerPos.x;
       users[localUID].grp.position.z=playerPos.z;
