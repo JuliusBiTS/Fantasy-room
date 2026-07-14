@@ -239,8 +239,19 @@ const GRAVITY = -18;
 const JUMP_FORCE = 6;
 
 // ══════════ AGORA STATE ══════════
-let agoraClient = null, localAudio = null, localVideo = null, screenAudio = null;
+// Shared music is published from a SEPARATE Agora client with uid
+// localUID + MUSIC_UID_OFFSET, joined to the same room. Agora's remote-user
+// model only exposes one audioTrack reference per uid, so trying to publish
+// mic and screen-audio on the SAME uid and later guess which is which on
+// the receiving end is fundamentally unreliable, not just an ordering race.
+// A dedicated uid sidesteps the ambiguity entirely: any audio track from a
+// uid >= MUSIC_UID_OFFSET is unambiguously music, always ambient; any real
+// player uid (always < MUSIC_UID_OFFSET, see localUID's generation below)
+// only ever has one audio track — their mic — always spatial.
+const MUSIC_UID_OFFSET = 1000000;
+let agoraClient = null, musicClient = null, localAudio = null, localVideo = null, screenAudio = null;
 let localUID = null, localName = '', isDM = false;
+let joinedAppId = null, joinedRoom = null;
 let micMuted = false, camOff = false, streaming = false;
 let forceMuted = false, preForceMuteState = false; // players: muted by the DM, cannot self-unmute
 let allMuted = false; // DM: current broadcast mute-all state
@@ -1181,11 +1192,20 @@ function onResize(){
 const pendingPos = {};
 
 async function initAgora(appId, room, myName, asDM) {
+  joinedAppId=appId; joinedRoom=room; // needed later if the DM starts sharing music
   agoraClient=AgoraRTC.createClient({mode:'rtc',codec:'vp8'});
 
   agoraClient.on('user-published', async (ru, mediaType) => {
     await agoraClient.subscribe(ru, mediaType);
     const uid=ru.uid;
+
+    // Shared music, published from its own uid (see MUSIC_UID_OFFSET above) —
+    // always ambient, no avatar, nothing to disambiguate.
+    if (uid >= MUSIC_UID_OFFSET) {
+      if (mediaType==='audio') { ensureACtx(); wireAmbient(ru.audioTrack); }
+      return;
+    }
+
     if (!users[uid]) {
       const {grp,vidMesh}=makeAvatar(uid,'User-'+uid,false);
       // Use buffered position if we got pos before user-published
@@ -1193,7 +1213,7 @@ async function initAgora(appId, room, myName, asDM) {
       const pz = pendingPos[uid]?.z ?? (Math.random()-.5)*1.5;
       const pyaw = pendingPos[uid]?.yaw ?? 0;
       grp.position.set(px,0,pz);
-      users[uid]={name:'User-'+uid,grp,vidMesh,targetX:px,targetZ:pz,targetYaw:pyaw,isStreamingMusic:!!pendingPos[uid]?.music};
+      users[uid]={name:'User-'+uid,grp,vidMesh,targetX:px,targetZ:pz,targetYaw:pyaw};
       delete pendingPos[uid];
     }
     if (mediaType==='video') {
@@ -1207,23 +1227,12 @@ async function initAgora(appId, room, myName, asDM) {
       } catch(e){}
     }
     if (mediaType==='audio') {
+      // Real player uids only ever publish one audio track — their mic —
+      // always spatial. Music never shares this uid anymore.
       ensureACtx();
-      // A user's very first audio track is always their mic (mic+cam publish
-      // together at join, before any music share is possible) — spatial.
-      // Anything after that, or anything that arrives while we already know
-      // this uid is streaming music (isStreamingMusic, carried on every 'pos'
-      // broadcast so even a late joiner picks it up within ~50ms), is the
-      // shared tab/screen audio — ambient, same volume everywhere, not tied
-      // to their avatar position. Relying on "first vs second" alone breaks
-      // for anyone who joins after the DM already started sharing music.
-      if (!users[uid].hasAudio && !users[uid].isStreamingMusic) {
-        users[uid].audioTrack = ru.audioTrack;
-        users[uid].hasAudio = true;
-        wireSpatial(uid, ru.audioTrack);
-      } else {
-        users[uid].screenAudioTrack = ru.audioTrack;
-        wireAmbient(ru.audioTrack);
-      }
+      users[uid].audioTrack = ru.audioTrack;
+      users[uid].hasAudio = true;
+      wireSpatial(uid, ru.audioTrack);
     }
   });
 
@@ -1247,10 +1256,9 @@ async function initAgora(appId, room, myName, asDM) {
           users[uid].targetX=msg.x;
           users[uid].targetZ=msg.z;
           users[uid].targetYaw=msg.yaw;
-          users[uid].isStreamingMusic=!!msg.music;
         } else {
           // User not yet created — buffer it
-          pendingPos[uid]={x:msg.x,z:msg.z,yaw:msg.yaw,music:!!msg.music};
+          pendingPos[uid]={x:msg.x,z:msg.z,yaw:msg.yaw};
         }
       }
       if(msg.type==='name'&&users[uid]){
@@ -1309,11 +1317,8 @@ async function broadcastPos(){
     // This SDK build silently drops the message if the returned promise is
     // never awaited — no throw, no rejection, it just never reaches anyone.
     // unreliable: high-frequency (20/s), only the latest position matters.
-    // 'music' rides along on every position update so any client — including
-    // one that joins mid-session — learns within ~50ms whether this uid is
-    // currently sharing tab audio, without a separate message/race to manage.
     await agoraClient.sendStreamMessage(
-      new TextEncoder().encode(JSON.stringify({type:'pos',x:playerPos.x,z:playerPos.z,yaw,music:streaming})), false);
+      new TextEncoder().encode(JSON.stringify({type:'pos',x:playerPos.x,z:playerPos.z,yaw})), false);
     if(users[localUID]?.grp){
       users[localUID].grp.position.x=playerPos.x;
       users[localUID].grp.position.z=playerPos.z;
@@ -1340,7 +1345,11 @@ async function toggleStream(){
   const stat=document.getElementById('mstat');
   const mbtn=document.getElementById('btn-music');
   if(streaming){
-    if(screenAudio){await agoraClient.unpublish(screenAudio);screenAudio.stop();screenAudio.close();screenAudio=null;}
+    try{
+      if(screenAudio && musicClient){await musicClient.unpublish(screenAudio);}
+      if(screenAudio){screenAudio.stop();screenAudio.close();screenAudio=null;}
+      if(musicClient){await musicClient.leave();musicClient=null;}
+    }catch(e){ console.warn('stopping music stream failed:', e); }
     streaming=false;
     document.getElementById('share-btn').textContent='🔊 Tab-Audio streamen';
     stat.textContent='Inaktiv'; stat.className='mstat';
@@ -1354,12 +1363,22 @@ async function toggleStream(){
     sv.stop(); sv.close();
     if(!sa){stat.textContent='Kein Tab-Audio — "Tab-Ton teilen" im Dialog aktivieren';return;}
     screenAudio=sa;
-    await agoraClient.publish(sa);
+    // Published from a second client on a derived uid — see MUSIC_UID_OFFSET
+    // — so the receiving end never has to guess which of this uid's tracks
+    // is the mic and which is the music.
+    musicClient=AgoraRTC.createClient({mode:'rtc',codec:'vp8'});
+    await musicClient.join(joinedAppId, joinedRoom, null, localUID + MUSIC_UID_OFFSET);
+    await musicClient.publish(sa);
     streaming=true;
     document.getElementById('share-btn').textContent='⏹ Stoppen';
     stat.textContent='▶ Musik streamt für alle'; stat.className='mstat on';
     mbtn.classList.add('str'); mbtn.querySelector('span').textContent='Musik läuft';
-  }catch(e){stat.textContent='Fehler: '+e.message;}
+  }catch(e){
+    stat.textContent='Fehler: '+e.message;
+    // Clean up a half-started attempt so the next click starts fresh.
+    try{ if(musicClient) await musicClient.leave(); }catch(_){}
+    musicClient=null; screenAudio=null; streaming=false;
+  }
 }
 
 // ══════════ UI EVENTS ══════════
@@ -1446,6 +1465,7 @@ document.getElementById('btn-leave').addEventListener('click',async()=>{
     if(localAudio){localAudio.stop();localAudio.close();}
     if(localVideo){localVideo.stop();localVideo.close();}
     if(screenAudio){screenAudio.stop();screenAudio.close();}
+    if(musicClient) await musicClient.leave();
     if(agoraClient) await agoraClient.leave();
   }catch(_){}
   location.reload();
