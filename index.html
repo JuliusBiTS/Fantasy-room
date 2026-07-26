@@ -257,6 +257,7 @@ let forceMuted = false, preForceMuteState = false; // players: muted by the DM, 
 let allMuted = false; // DM: current broadcast mute-all state
 const users = {};
 let audioCtx = null;
+let musicGain = null, musicUid = null; // ambient music's own isolation gain node
 
 // ══════════ POINTER LOCK ══════════
 const canvas = document.getElementById('c');
@@ -997,6 +998,17 @@ function ensureACtx() {
   if (audioCtx.state==='suspended') audioCtx.resume();
 }
 
+// The secret wing (corridor + room) is walled off from the main room for
+// audio purposes, not just distance falloff — once past the doorway
+// threshold, treat it as a separate acoustic zone so occupants of one
+// can't hear the other at all, regardless of in-world distance.
+function isInSecretWing(x, z) {
+  const th=doorWallInfo.ry+Math.PI, dc=Math.cos(th), ds=Math.sin(th);
+  const dox=x-doorWallInfo.mid[0], doz=z-doorWallInfo.mid[1];
+  const localZ = dox*ds + doz*dc;
+  return localZ > 0.5;
+}
+
 function wireSpatial(uid, track) {
   ensureACtx();
   try {
@@ -1004,8 +1016,13 @@ function wireSpatial(uid, track) {
     const pan=audioCtx.createPanner();
     pan.panningModel='HRTF'; pan.distanceModel='inverse';
     pan.refDistance=1.2; pan.maxDistance=40; pan.rolloffFactor=1.4;
-    src.connect(pan); pan.connect(audioCtx.destination);
+    // Isolation gate: hard-muted whenever speaker and listener are on
+    // opposite sides of the secret-room doorway (see isInSecretWing).
+    const isoGain=audioCtx.createGain();
+    isoGain.gain.value=1;
+    src.connect(pan); pan.connect(isoGain); isoGain.connect(audioCtx.destination);
     users[uid].panner=pan;
+    users[uid].isoGain=isoGain;
     setPannerPos(uid);
   } catch(e) {
     console.warn('Spatial audio fallback:', e);
@@ -1014,15 +1031,17 @@ function wireSpatial(uid, track) {
 }
 
 function wireAmbient(track) {
-  // Screen share audio: route directly to destination with no panning
+  // Screen share / DM music: route directly to destination with no panning,
+  // but still gated off inside the secret room so it doesn't bleed in
+  // there either.
   ensureACtx();
   try {
     const src = audioCtx.createMediaStreamSource(new MediaStream([track.getMediaStreamTrack()]));
-    // Gain node so we can control music volume separately if needed
     const gain = audioCtx.createGain();
-    gain.gain.value = 0.85;
+    gain.gain.value = isInSecretWing(playerPos.x,playerPos.z) ? 0 : 0.85;
     src.connect(gain);
     gain.connect(audioCtx.destination);
+    musicGain = gain;
   } catch(e) {
     console.warn('Ambient audio fallback:', e);
     track.play();
@@ -1036,6 +1055,16 @@ function setPannerPos(uid) {
   u.panner.positionX.setValueAtTime(p.x,t);
   u.panner.positionY.setValueAtTime(p.y+EYE_H,t);
   u.panner.positionZ.setValueAtTime(p.z,t);
+  if (u.isoGain) {
+    const sameZone = isInSecretWing(p.x,p.z) === isInSecretWing(playerPos.x,playerPos.z);
+    u.isoGain.gain.setTargetAtTime(sameZone ? 1 : 0, t, 0.1);
+  }
+}
+
+function updateMusicIsolation() {
+  if (!musicGain || !audioCtx) return;
+  const target = isInSecretWing(playerPos.x,playerPos.z) ? 0 : 0.85;
+  musicGain.gain.setTargetAtTime(target, audioCtx.currentTime, 0.1);
 }
 
 function updateListener() {
@@ -1119,6 +1148,7 @@ function animate() {
 
   // listener
   updateListener();
+  updateMusicIsolation();
 
   // avatars
   let nearDist=Infinity, nearName=null;
@@ -1218,7 +1248,16 @@ async function initAgora(appId, room, myName, asDM) {
     // Shared music, published from its own uid (see MUSIC_UID_OFFSET above) —
     // always ambient, no avatar, nothing to disambiguate.
     if (uid >= MUSIC_UID_OFFSET) {
-      if (mediaType==='audio') { ensureACtx(); wireAmbient(ru.audioTrack); }
+      if (mediaType==='audio') {
+        ensureACtx();
+        // The SDK auto-plays subscribed remote audio through its own hidden
+        // element by default. Stop that so ONLY our manual WebAudio routing
+        // below (which we can pan/gate) is ever actually audible — otherwise
+        // the raw, unpositioned copy plays alongside it.
+        ru.audioTrack.stop();
+        musicUid = uid;
+        wireAmbient(ru.audioTrack);
+      }
       return;
     }
 
@@ -1246,6 +1285,22 @@ async function initAgora(appId, room, myName, asDM) {
       // Real player uids only ever publish one audio track — their mic —
       // always spatial. Music never shares this uid anymore.
       ensureACtx();
+      // See the music branch above: stop the SDK's own auto-play so only
+      // our panned WebAudio graph is audible. This matters especially here
+      // because setEnabled() on an already-published track makes the SDK
+      // unpublish+republish under the hood — every mute/unmute cycle (the
+      // DM's mute-all, or a player's own mic button) re-triggers this
+      // 'user-published' event with a fresh audioTrack. Without stopping
+      // the new copy's auto-play each time, re-wiring wireSpatial() below
+      // just adds a second, unpanned copy on top of it — which is exactly
+      // the "spatial sound gone, everything's flat stereo" symptom seen
+      // after unmuting.
+      ru.audioTrack.stop();
+      // Tear down any stale graph from a previous publish of this uid
+      // before wiring a fresh one, so repeated mute/unmute cycles don't
+      // leak orphaned panner/gain nodes over a long session.
+      if (users[uid].panner) { try{users[uid].panner.disconnect();}catch(_){} }
+      if (users[uid].isoGain) { try{users[uid].isoGain.disconnect();}catch(_){} }
       users[uid].audioTrack = ru.audioTrack;
       users[uid].hasAudio = true;
       wireSpatial(uid, ru.audioTrack);
@@ -1255,12 +1310,26 @@ async function initAgora(appId, room, myName, asDM) {
   agoraClient.on('user-unpublished',(ru,mt)=>{
     if(mt==='video'&&users[ru.uid])
       users[ru.uid].vidMesh.material=new THREE.MeshBasicMaterial({color:0x111111,side:THREE.DoubleSide});
+    if(mt==='audio'&&users[ru.uid]){
+      // Disconnect the now-dead graph (the track behind it just stopped
+      // producing data) — a re-publish on unmute rebuilds it from scratch
+      // in the 'user-published' handler above.
+      if (users[ru.uid].panner) { try{users[ru.uid].panner.disconnect();}catch(_){} }
+      if (users[ru.uid].isoGain) { try{users[ru.uid].isoGain.disconnect();}catch(_){} }
+      users[ru.uid].panner=null;
+      users[ru.uid].isoGain=null;
+      users[ru.uid].hasAudio=false;
+    }
   });
 
   agoraClient.on('user-left',ru=>{
     if(users[ru.uid]?.grp) scene.remove(users[ru.uid].grp);
     delete users[ru.uid];
     delete pendingPos[ru.uid];
+    if(ru.uid===musicUid){
+      if(musicGain){ try{musicGain.disconnect();}catch(_){} musicGain=null; }
+      musicUid=null;
+    }
   });
 
   agoraClient.on('stream-message',(uid,data)=>{
