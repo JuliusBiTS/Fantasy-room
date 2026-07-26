@@ -1188,6 +1188,13 @@ function onResize(){
 
 // ══════════ AGORA ══════════
 
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} — keine Antwort nach ${ms/1000}s`)), ms))
+  ]);
+}
+
 // Buffer for position messages that arrive before user-published
 const pendingPos = {};
 
@@ -1196,7 +1203,16 @@ async function initAgora(appId, room, myName, asDM) {
   agoraClient=AgoraRTC.createClient({mode:'rtc',codec:'vp8'});
 
   agoraClient.on('user-published', async (ru, mediaType) => {
-    await agoraClient.subscribe(ru, mediaType);
+    try {
+      await agoraClient.subscribe(ru, mediaType);
+    } catch(e) {
+      // Without this, a single failed subscribe (e.g. a transient network
+      // hiccup) throws inside the event handler, is silently swallowed by
+      // the SDK's event emitter, and that one track just never connects —
+      // with nothing in the console pointing at why.
+      console.warn('subscribe failed for uid', ru.uid, mediaType, e);
+      return;
+    }
     const uid=ru.uid;
 
     // Shared music, published from its own uid (see MUSIC_UID_OFFSET above) —
@@ -1287,9 +1303,25 @@ async function initAgora(appId, room, myName, asDM) {
   localUID=Math.floor(Math.random()*900000)+10000;
   await agoraClient.join(appId,room,null,localUID);
 
-  [localAudio,localVideo]=await AgoraRTC.createMicrophoneAndCameraTracks(
-    {AEC:true,ANS:true,AGC:true},{encoderConfig:'480p_1',facingMode:'user'});
-  await agoraClient.publish([localAudio,localVideo]);
+  // getUserMedia can hang indefinitely on some devices/permission states
+  // instead of rejecting — confirmed during testing (Agora SDK logged
+  // "createMicrophoneAndCameraTracks timeout" with no error surfaced).
+  // Without a timeout, the join button is stuck on "Verbinde…" forever with
+  // no feedback. If camera+mic together fail or time out, fall back to
+  // mic-only so a camera problem doesn't block someone from joining at all.
+  try {
+    [localAudio,localVideo]=await withTimeout(
+      AgoraRTC.createMicrophoneAndCameraTracks(
+        {AEC:true,ANS:true,AGC:true},{encoderConfig:'480p_1',facingMode:'user'}),
+      15000, 'Kamera/Mikrofon-Zugriff');
+  } catch(e) {
+    console.warn('Kamera+Mikrofon fehlgeschlagen, versuche nur Mikrofon:', e);
+    localVideo = null;
+    localAudio = await withTimeout(
+      AgoraRTC.createMicrophoneAudioTrack({AEC:true,ANS:true,AGC:true}),
+      12000, 'Mikrofon-Zugriff');
+  }
+  await agoraClient.publish(localVideo ? [localAudio,localVideo] : [localAudio]);
 
   // local avatar
   const {grp,vidMesh}=makeAvatar(localUID,myName+(asDM?' [DM]':''),asDM);
@@ -1311,8 +1343,14 @@ async function initAgora(appId, room, myName, asDM) {
 }
 
 let posSendFailLogged = false;
+let posSendInFlight = false;
 async function broadcastPos(){
-  if(!agoraClient)return;
+  // With more people in the room, an occasional send can take longer than
+  // the 50ms tick — skip this tick rather than let sends pile up behind
+  // each other (each one only ever carries the CURRENT position anyway, so
+  // skipping a tick loses nothing but a little smoothness).
+  if(!agoraClient || posSendInFlight)return;
+  posSendInFlight = true;
   try{
     // This SDK build silently drops the message if the returned promise is
     // never awaited — no throw, no rejection, it just never reaches anyone.
@@ -1329,6 +1367,8 @@ async function broadcastPos(){
     // avatar will appear frozen for everyone else, even though their own
     // audio/video still works fine (those are separate media tracks).
     if(!posSendFailLogged){ console.warn('sendStreamMessage(pos) failed — other players will not see you move:', e); posSendFailLogged=true; }
+  }finally{
+    posSendInFlight = false;
   }
 }
 
@@ -1403,6 +1443,13 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
     document.getElementById('hud').style.display='flex';
     document.getElementById('ctrl').style.display='flex';
     document.getElementById('hud-room').textContent='RAUM: '+room.toUpperCase();
+    if(!localVideo){
+      // Mic-only fallback kicked in — the camera button would otherwise be a dead click.
+      const camBtn=document.getElementById('btn-cam');
+      camBtn.disabled=true; camBtn.classList.add('off');
+      camBtn.querySelector('span').textContent='Keine Kamera';
+      camBtn.title='Kamera nicht verfügbar — nur Mikrofon aktiv';
+    }
     if(isDM){
       document.getElementById('gm').style.display='block';
       document.getElementById('btn-music').style.display='flex';
@@ -1410,6 +1457,9 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
     }
   }catch(e){
     console.error(e);
+    // The channel join itself can succeed before media acquisition fails —
+    // leave it so a retry doesn't pile up an orphaned, trackless connection.
+    try{ if(agoraClient) await agoraClient.leave(); }catch(_){}
     document.getElementById('join-overlay').style.display='flex';
     btn.disabled=false; btn.textContent='▶ VERBINDEN';
     err.textContent='Verbindungsfehler: '+(e.message||'Agora App-ID prüfen, Testing-Mode aktiv?');
