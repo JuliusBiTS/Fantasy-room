@@ -156,6 +156,7 @@ canvas{display:block}
   <button class="cb" id="btn-mic">🎤 <span>Mic</span></button>
   <button class="cb" id="btn-cam">📷 <span>Kamera</span></button>
   <button class="cb" id="btn-audiomode" title="Zwischen räumlichem Klang und gleicher Lautstärke für alle wechseln">🎧 <span>Räumlich</span></button>
+  <button class="cb" id="btn-tactical" title="Taktische Draufsicht auf den Kampftisch">🗺 <span>Taktische Ansicht</span></button>
   <div class="cb-sep"></div>
   <button class="cb dm" id="btn-music" style="display:none">🎵 <span>Musik</span></button>
   <div class="cb-sep" id="sep-dm" style="display:none"></div>
@@ -198,6 +199,11 @@ canvas{display:block}
       <option value="player">Spieler (Teal)</option>
       <option value="ally">Verbündeter (Grün)</option>
       <option value="enemy" selected>Gegner (Rot)</option>
+    </select>
+    <select class="pi" id="token-size">
+      <option value="small">Klein</option>
+      <option value="medium" selected>Mittel</option>
+      <option value="large">Groß</option>
     </select>
     <input type="file" id="token-file" accept="image/*" style="display:none"/>
     <button class="pb" id="token-add-btn" title="F: aufnehmen/ablegen · X: entfernen (während gehalten)">➕ Token hinzufügen</button>
@@ -248,6 +254,7 @@ let renderer, scene, camera, clock;
 let particleMesh, emberMesh, starSphere;
 let cLight, mLight, hearthLight;
 let doorWallInfo; // NE-chamfer doorway to the secret room — used for the movement passage
+let tacticalView = false; // fixed bird's-eye camera over the table, for precise token placement
 
 // ══════════ COMBAT MAP ══════════
 // Unsigned Cloudinary upload preset — cloud name and preset name are public
@@ -306,7 +313,7 @@ document.addEventListener('pointerlockchange', () => {
 });
 
 document.addEventListener('mousemove', e => {
-  if (!isLocked) return;
+  if (!isLocked || tacticalView) return; // frozen look direction while in the fixed tactical view, so toggling back doesn't snap to wherever the mouse silently drifted
   yaw   -= e.movementX * 0.0018;
   pitch -= e.movementY * 0.0018;
   pitch  = Math.max(-1.2, Math.min(1.2, pitch));
@@ -845,16 +852,19 @@ function makeTokenMesh(url, color) {
 }
 
 const TOKEN_COLORS = {player:TEAL, ally:EMERALD, enemy:EMBER};
+const TOKEN_SCALES = {small:0.7, medium:1.0, large:1.5};
 
-function addToken(id, url, u, v, category, broadcast) {
+function addToken(id, url, u, v, category, size, broadcast) {
   if (tokens[id]) return; // already exists locally (e.g. echo of our own broadcast never happens, but late-join resync could repeat)
   const color = TOKEN_COLORS[category] || EMBER;
   const {grp, disc} = makeTokenMesh(url, color);
+  const scale = TOKEN_SCALES[size] || 1.0;
+  grp.scale.set(scale, scale, 1);
   disc.userData.tokenId = id;
   grp.position.copy(mapUVToWorld(u, v));
   scene.add(grp);
-  tokens[id] = {grp, disc, url, u, v, category, lastBroadcast:0};
-  if (broadcast) broadcastToken({type:'tokenAdd', id, url, u, v, category}, true);
+  tokens[id] = {grp, disc, url, u, v, category, size, lastBroadcast:0};
+  if (broadcast) broadcastToken({type:'tokenAdd', id, url, u, v, category, size}, true);
 }
 
 function moveToken(id, u, v, broadcast, reliable) {
@@ -1261,8 +1271,10 @@ function animate() {
   const dt=Math.min(clock.getDelta(),0.05);
   _t+=dt;
 
-  // movement — clamped to the chamfered-octagon footprint
-  if (isLocked) {
+  // movement — clamped to the chamfered-octagon footprint. Frozen in place
+  // while the tactical view is active — it's a fixed bird's-eye shot of
+  // the table, not a flycam.
+  if (isLocked && !tacticalView) {
     const spd=MOVE_SPEED*dt;
     const fw =new THREE.Vector3(-Math.sin(yaw),0,-Math.cos(yaw));
     const rt =new THREE.Vector3( Math.cos(yaw),0,-Math.sin(yaw));
@@ -1306,9 +1318,17 @@ function animate() {
     }
   }
 
-  // camera
-  camera.position.copy(playerPos);
-  camera.rotation.set(pitch,yaw,0,'YXZ');
+  // camera — a fixed bird's-eye shot centered on the table while the
+  // tactical view is on, otherwise the normal first-person follow. Reusing
+  // the same `camera` for both means every raycast-based interaction
+  // (token pickup/drop/drag) keeps working unchanged in either mode.
+  if (tacticalView && battleMapMesh) {
+    camera.position.set(battleMapMesh.position.x, battleMapMesh.position.y+1.6, battleMapMesh.position.z);
+    camera.rotation.set(-Math.PI/2, 0, 0, 'YXZ');
+  } else {
+    camera.position.copy(playerPos);
+    camera.rotation.set(pitch,yaw,0,'YXZ');
+  }
 
   // listener
   updateListener();
@@ -1461,7 +1481,7 @@ async function initAgora(appId, room, myName, asDM, token) {
       if (isDM) {
         if (currentMapUrl) broadcastMap(currentMapUrl);
         Object.entries(tokens).forEach(([id,t])=>{
-          broadcastToken({type:'tokenAdd', id, url:t.url, u:t.u, v:t.v, category:t.category}, true);
+          broadcastToken({type:'tokenAdd', id, url:t.url, u:t.u, v:t.v, category:t.category, size:t.size}, true);
         });
       }
     }
@@ -1550,7 +1570,7 @@ async function initAgora(appId, room, myName, asDM, token) {
         setBattleMap(msg.url||null);
       }
       if(msg.type==='tokenAdd'){
-        addToken(msg.id, msg.url, msg.u, msg.v, msg.category, false);
+        addToken(msg.id, msg.url, msg.u, msg.v, msg.category, msg.size, false);
       }
       if(msg.type==='tokenMove'){
         moveToken(msg.id, msg.u, msg.v, false);
@@ -1793,6 +1813,13 @@ document.getElementById('btn-audiomode').addEventListener('click',()=>{
   b.classList.toggle('str',!spatialMode);
 });
 
+document.getElementById('btn-tactical').addEventListener('click',()=>{
+  tacticalView=!tacticalView;
+  const b=document.getElementById('btn-tactical');
+  b.querySelector('span').textContent=tacticalView?'Normale Ansicht':'Taktische Ansicht';
+  b.classList.toggle('str',tacticalView);
+});
+
 document.getElementById('btn-music').addEventListener('click',toggleStream);
 document.getElementById('share-btn').addEventListener('click',toggleStream);
 
@@ -1836,7 +1863,8 @@ document.getElementById('token-file').addEventListener('change', async(e)=>{
     const id=Date.now()+'-'+Math.floor(Math.random()*1e6);
     const u=0.5+(Math.random()-0.5)*0.1, v=0.5+(Math.random()-0.5)*0.1;
     const category=document.getElementById('token-category').value;
-    addToken(id, url, u, v, category, true);
+    const size=document.getElementById('token-size').value;
+    addToken(id, url, u, v, category, size, true);
   }catch(err){
     console.warn('token upload failed:', err);
   }
