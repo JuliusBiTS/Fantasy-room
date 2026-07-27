@@ -468,28 +468,11 @@ function buildDome() {
 function buildFocusWall() {
   const z = -OCT_HW+0.03;
   buildPanoramaWindow(0, 2.12, z, 0, 1.5, 0.85);
-  addScreen(0, 1.1, z, 0, 2.4, 1.25, (ctx,w,h)=>{
-    ctx.fillStyle='#efe3c8'; ctx.fillRect(0,0,w,h);
-    ctx.strokeStyle='rgba(90,70,30,0.35)'; ctx.lineWidth=6; ctx.strokeRect(8,8,w-16,h-16);
-    ctx.fillStyle='rgba(120,150,90,0.55)';
-    ctx.beginPath();
-    ctx.moveTo(w*0.42,h*0.16);
-    ctx.bezierCurveTo(w*0.65,h*0.13,w*0.78,h*0.34,w*0.72,h*0.55);
-    ctx.bezierCurveTo(w*0.68,h*0.76,w*0.5,h*0.9,w*0.35,h*0.82);
-    ctx.bezierCurveTo(w*0.22,h*0.72,w*0.2,h*0.46,w*0.28,h*0.3);
-    ctx.closePath(); ctx.fill();
-    ctx.strokeStyle='rgba(90,70,30,0.5)'; ctx.lineWidth=2; ctx.stroke();
-    ctx.fillStyle='#5a4520'; ctx.font='bold 42px Cinzel,serif'; ctx.textAlign='center';
-    ctx.fillText('VARRÁC',w/2,52);
-    ctx.font='italic 15px "EB Garamond",serif'; ctx.fillStyle='rgba(90,70,30,0.7)';
-    ctx.fillText('Stadt- und Inselkarte',w/2,76);
-    ctx.font='13px "EB Garamond",serif'; ctx.textAlign='left';
-    [['Sternenhof',w*0.46,h*0.42],['Kartenhaus',w*0.6,h*0.52],['Hafenanlagen',w*0.36,h*0.86]].forEach(([label,x,y])=>{
-      ctx.beginPath(); ctx.arc(x,y,3,0,Math.PI*2); ctx.fillStyle='#8a1f2b'; ctx.fill();
-      ctx.fillStyle='#4a3818'; ctx.fillText(label,x+8,y+4);
-    });
-    drawCompassRose(ctx,w-64,h-64,38,'rgba(90,70,30,0.5)');
-  });
+  // The two real map posters, flanking the window at the same eye-level
+  // height as the character portraits elsewhere in the room.
+  const mapAspect = 900/1272;
+  buildFramedImage(-1.5, -OCT_HW, 0, 'maps/Akademie-Stockwerke.jpg', mapAspect, 'DIE AKADEMIE');
+  buildFramedImage( 1.5, -OCT_HW, 0, 'maps/Varrac-Inselkarte.jpg', mapAspect, 'VARRÁC');
 }
 
 function buildPanoramaWindow(x,y,z,ry,sw,sh) {
@@ -607,19 +590,25 @@ function buildPortraits() {
 
 function buildPortrait(wallIndex, url, aspect, name) {
   const w = octWallDefs()[wallIndex];
+  buildFramedImage(w.mid[0], w.mid[1], w.ry, url, aspect, name);
+}
+
+// Gilt wood-framed wall image with a nameplate — shared by the character
+// portraits and the map posters so they read as one consistent gallery.
+function buildFramedImage(midX, midZ, ry, url, aspect, name) {
   const H = 1.35, W = H*aspect;
   const y = 1.75;
-  const nx = Math.sin(w.ry), nz = Math.cos(w.ry);
+  const nx = Math.sin(ry), nz = Math.cos(ry);
 
   const frame = new THREE.Mesh(new THREE.BoxGeometry(W+0.16,H+0.16,0.06),mat(WOOD_DARK,0,0,0.5,0.08));
-  frame.position.set(w.mid[0]+nx*0.03, y, w.mid[1]+nz*0.03); frame.rotation.y=w.ry; scene.add(frame);
+  frame.position.set(midX+nx*0.03, y, midZ+nz*0.03); frame.rotation.y=ry; scene.add(frame);
   const edge = new THREE.Mesh(new THREE.BoxGeometry(W+0.22,H+0.22,0.03),mat(GOLD,GOLD,1.4,0));
-  edge.position.set(w.mid[0]+nx*0.02, y, w.mid[1]+nz*0.02); edge.rotation.y=w.ry; scene.add(edge);
+  edge.position.set(midX+nx*0.02, y, midZ+nz*0.02); edge.rotation.y=ry; scene.add(edge);
 
   const tex = new THREE.TextureLoader().load(url);
-  const imgOffset = new THREE.Vector3(0,0,0.065).applyEuler(new THREE.Euler(0,w.ry,0));
+  const imgOffset = new THREE.Vector3(0,0,0.065).applyEuler(new THREE.Euler(0,ry,0));
   const img = new THREE.Mesh(new THREE.PlaneGeometry(W,H), new THREE.MeshBasicMaterial({map:tex}));
-  img.position.set(w.mid[0]+imgOffset.x, y, w.mid[1]+imgOffset.z); img.rotation.y=w.ry; scene.add(img);
+  img.position.set(midX+imgOffset.x, y, midZ+imgOffset.z); img.rotation.y=ry; scene.add(img);
 
   const nc=document.createElement('canvas'); nc.width=320; nc.height=64;
   const nctx=nc.getContext('2d');
@@ -627,11 +616,11 @@ function buildPortrait(wallIndex, url, aspect, name) {
   nctx.strokeStyle='rgba(224,184,76,0.6)'; nctx.lineWidth=2; nctx.strokeRect(2,2,316,60);
   nctx.fillStyle='#e0b84c'; nctx.font='bold 26px Cinzel,serif'; nctx.textAlign='center'; nctx.textBaseline='middle';
   nctx.fillText(name, 160, 33);
-  const plateOffset = new THREE.Vector3(0,0,0.045).applyEuler(new THREE.Euler(0,w.ry,0));
+  const plateOffset = new THREE.Vector3(0,0,0.045).applyEuler(new THREE.Euler(0,ry,0));
   const plate = new THREE.Mesh(new THREE.PlaneGeometry(0.55,0.11),
     new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(nc), transparent:true}));
-  plate.position.set(w.mid[0]+plateOffset.x, y-H/2-0.14, w.mid[1]+plateOffset.z);
-  plate.rotation.y=w.ry; scene.add(plate);
+  plate.position.set(midX+plateOffset.x, y-H/2-0.14, midZ+plateOffset.z);
+  plate.rotation.y=ry; scene.add(plate);
 }
 
 // ══════════ FURNITURE ══════════
