@@ -428,7 +428,7 @@ function buildRoom() {
   buildFocusWall();
   buildLibraryWall();
   buildFireplace(-OCT_HW+0.03, 0, Math.PI/2);
-  buildStarCharts();
+  buildMapWall();
   buildPortraits();
 }
 
@@ -468,40 +468,10 @@ function buildDome() {
 }
 
 // North wall — the DM's focus wall: island-map mosaic + panorama storm window
+// North wall — the room's centerpiece: the party and their mentor, framed
+// large above everything else on the wall.
 function buildFocusWall() {
-  const z = -OCT_HW+0.03;
-  buildPanoramaWindow(0, 2.12, z, 0, 1.5, 0.85);
-  // The two real map posters, flanking the window at the same eye-level
-  // height as the character portraits elsewhere in the room.
-  const mapAspect = 900/1272;
-  buildFramedImage(-1.5, -OCT_HW, 0, 'maps/Akademie-Stockwerke.jpg', mapAspect, 'DIE AKADEMIE');
-  buildFramedImage( 1.5, -OCT_HW, 0, 'maps/Varrac-Inselkarte.jpg', mapAspect, 'VARRÁC');
-}
-
-function buildPanoramaWindow(x,y,z,ry,sw,sh) {
-  const frame=new THREE.Mesh(new THREE.BoxGeometry(sw+0.16,sh+0.16,0.1),mat(STONE_TRIM,0,0,0.6,0.05));
-  frame.position.set(x,y,z); frame.rotation.y=ry; scene.add(frame);
-  [[sh/2+0.08],[-(sh/2+0.08)]].forEach(([dy])=>{
-    const e=new THREE.Mesh(new THREE.BoxGeometry(sw+0.18,0.035,0.11),mat(GOLD,GOLD,1.5,0));
-    e.position.set(x,y+dy,z); e.rotation.y=ry; scene.add(e);
-  });
-  const rc=document.createElement('canvas'); rc.width=220; rc.height=190;
-  const rctx=rc.getContext('2d');
-  rctx.fillStyle='rgba(6,12,24,0.95)'; rctx.fillRect(0,0,220,190);
-  [[40,60,10,0.18],[120,90,14,0.12],[170,50,8,0.2],[70,140,6,0.16]].forEach(([rx,ry2,rr,a])=>{
-    const g=rctx.createRadialGradient(rx,ry2,0,rx,ry2,rr);
-    g.addColorStop(0,`rgba(255,205,120,${a})`); g.addColorStop(1,'transparent');
-    rctx.fillStyle=g; rctx.beginPath(); rctx.arc(rx,ry2,rr,0,Math.PI*2); rctx.fill();
-  });
-  rctx.strokeStyle='rgba(150,190,220,0.22)'; rctx.lineWidth=0.8;
-  for(let i=0;i<36;i++){
-    const rx=Math.random()*220, ry3=Math.random()*190, rl=4+Math.random()*10;
-    rctx.beginPath(); rctx.moveTo(rx,ry3); rctx.lineTo(rx-1,ry3+rl); rctx.stroke();
-  }
-  const offset=new THREE.Vector3(0,0,0.06).applyEuler(new THREE.Euler(0,ry,0));
-  const pane=new THREE.Mesh(new THREE.PlaneGeometry(sw,sh),
-    new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(rc),transparent:true,opacity:0.92,side:THREE.DoubleSide}));
-  pane.position.set(x+offset.x,y,z+offset.z); pane.rotation.y=ry; scene.add(pane);
+  buildFramedImage(0, -OCT_HW, 0, 'portraits/Wegweiser.jpg', 1672/941, 'DIE WEGWEISER', 2.2, 1.6);
 }
 
 // East wall — the library ("Tintenstube")
@@ -567,20 +537,11 @@ function buildFireplace(x,z,ry) {
   scene.add(hearthLight);
 }
 
-// South wall, behind the players — a couple of star charts
-function buildStarCharts() {
-  const z = OCT_HW-0.04;
-  [[-0.85,1.55],[0.85,1.55]].forEach(([x,y])=>{
-    addScreen(x,y,z,Math.PI,0.6,0.6,(ctx,w,h)=>{
-      ctx.fillStyle='#0c1730'; ctx.beginPath(); ctx.arc(w/2,h/2,w/2-4,0,Math.PI*2); ctx.fill();
-      ctx.strokeStyle='rgba(224,184,76,0.4)'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(w/2,h/2,w/2-4,0,Math.PI*2); ctx.stroke();
-      const pts=[];
-      for(let i=0;i<7;i++){ pts.push([w*0.2+Math.random()*w*0.6, h*0.2+Math.random()*h*0.6]); }
-      ctx.strokeStyle='rgba(224,184,76,0.3)'; ctx.lineWidth=1;
-      ctx.beginPath(); pts.forEach((p,i)=>{ i===0?ctx.moveTo(p[0],p[1]):ctx.lineTo(p[0],p[1]); }); ctx.stroke();
-      pts.forEach(p=>{ ctx.fillStyle='rgba(255,240,210,0.85)'; ctx.beginPath(); ctx.arc(p[0],p[1],2.2,0,Math.PI*2); ctx.fill(); });
-    });
-  });
+// South wall, behind the players — the two map posters
+function buildMapWall() {
+  const mapAspect = 900/1272;
+  buildFramedImage(-1.5, OCT_HW, Math.PI, 'maps/Akademie-Stockwerke.jpg', mapAspect, 'DIE AKADEMIE');
+  buildFramedImage( 1.5, OCT_HW, Math.PI, 'maps/Varrac-Inselkarte.jpg', mapAspect, 'VARRÁC');
 }
 
 // Player portraits — gold-framed, mounted on the three empty chamfer walls
@@ -598,9 +559,8 @@ function buildPortrait(wallIndex, url, aspect, name) {
 
 // Gilt wood-framed wall image with a nameplate — shared by the character
 // portraits and the map posters so they read as one consistent gallery.
-function buildFramedImage(midX, midZ, ry, url, aspect, name) {
-  const H = 1.35, W = H*aspect;
-  const y = 1.75;
+function buildFramedImage(midX, midZ, ry, url, aspect, name, H=1.35, y=1.75) {
+  const W = H*aspect;
   const nx = Math.sin(ry), nz = Math.cos(ry);
 
   const frame = new THREE.Mesh(new THREE.BoxGeometry(W+0.16,H+0.16,0.06),mat(WOOD_DARK,0,0,0.5,0.08));
