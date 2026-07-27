@@ -192,6 +192,12 @@ canvas{display:block}
     <button class="pb" id="map-clear-btn" style="display:none">✕ Karte entfernen</button>
     <div class="mstat" id="map-stat">Keine Karte aktiv</div>
   </div>
+  <div class="gm-sec">
+    <div class="gstt">Token</div>
+    <input type="file" id="token-file" accept="image/*" style="display:none"/>
+    <button class="pb" id="token-add-btn" title="F: aufnehmen/ablegen · X: entfernen (während gehalten)">➕ Token hinzufügen</button>
+    <div class="mstat">F: aufnehmen/ablegen · X: entfernen</div>
+  </div>
 </div>
 
 <div id="prox"></div>
@@ -245,6 +251,12 @@ let doorWallInfo; // NE-chamfer doorway to the secret room — used for the move
 const CLOUDINARY_CLOUD = 'su0cgmgw';
 const CLOUDINARY_PRESET = 'fantasy-room';
 let battleMapMesh = null, defaultMapTexture = null, currentMapUrl = null;
+
+// ══════════ TOKENS ══════════
+const TOKEN_RADIUS = 0.055;
+const tokens = {}; // id -> {grp, disc, u, v, owner, lastBroadcast}
+let heldTokenId = null;
+const tokenRaycaster = new THREE.Raycaster();
 
 // player
 const playerPos = new THREE.Vector3(0, EYE_H, 3.2);
@@ -300,6 +312,28 @@ document.addEventListener('keydown', e => {
   if (e.code === 'Space' && isLocked && playerPos.y <= EYE_H + 0.05) {
     velY = JUMP_FORCE;
     e.preventDefault();
+  }
+  // Token pickup/drop/remove — DM-only for now (all tokens are DM-added
+  // "monster" tokens until player-owned tokens land). Crosshair-based
+  // rather than a free mouse cursor, since the room stays pointer-locked
+  // during normal play — matches the existing WASD/mouse-look paradigm
+  // instead of introducing a separate cursor mode.
+  if (e.code === 'KeyF' && isLocked && isDM && battleMapMesh) {
+    if (heldTokenId) {
+      tokenRaycaster.setFromCamera({x:0,y:0}, camera);
+      const hit = tokenRaycaster.intersectObject(battleMapMesh)[0];
+      if (hit) moveToken(heldTokenId, hit.uv.x, hit.uv.y, true, true);
+      heldTokenId = null;
+    } else {
+      tokenRaycaster.setFromCamera({x:0,y:0}, camera);
+      const meshes = Object.values(tokens).map(t=>t.disc);
+      const hit = tokenRaycaster.intersectObjects(meshes)[0];
+      if (hit) heldTokenId = hit.object.userData.tokenId;
+    }
+  }
+  if (e.code === 'KeyX' && isLocked && isDM && heldTokenId) {
+    removeToken(heldTokenId, true);
+    heldTokenId = null;
   }
 });
 document.addEventListener('keyup',   e => { keys[e.code] = false; });
@@ -753,7 +787,7 @@ function setBattleMap(url) {
   });
 }
 
-async function uploadMapImage(file) {
+async function uploadImage(file) {
   const fd = new FormData();
   fd.append('file', file);
   fd.append('upload_preset', CLOUDINARY_PRESET);
@@ -769,6 +803,67 @@ async function broadcastMap(url) {
     await agoraClient.sendStreamMessage(
       new TextEncoder().encode(JSON.stringify({type:'map', url})), true);
   } catch(e) { console.warn('map broadcast failed:', e); }
+}
+
+// Normalized (u,v) on the map image -> world position, using the plane's
+// own current transform (rotation/scale/position) so this stays correct
+// regardless of how the map's aspect-fit scale changed on load. u,v follow
+// THREE's own PlaneGeometry UV convention (0,0 at local -width/2,-height/2),
+// the same convention a raycast hit against battleMapMesh already returns —
+// that self-consistency is what actually matters, not which edge is "up".
+function mapUVToWorld(u, v) {
+  const baseW = TABLE_TL*0.72, baseH = TABLE_TW*0.7;
+  const local = new THREE.Vector3((u-0.5)*baseW, (v-0.5)*baseH, 0.004);
+  return battleMapMesh.localToWorld(local);
+}
+
+function makeTokenMesh(url, color) {
+  const grp = new THREE.Group();
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(TOKEN_RADIUS, 24),
+    new THREE.MeshBasicMaterial({map:new THREE.TextureLoader().load(url)}));
+  disc.rotation.x=-Math.PI/2;
+  grp.add(disc);
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(TOKEN_RADIUS*0.92, TOKEN_RADIUS*1.12, 24),
+    new THREE.MeshBasicMaterial({color, side:THREE.DoubleSide}));
+  ring.rotation.x=-Math.PI/2; ring.position.y=-0.0005;
+  grp.add(ring);
+  return {grp, disc};
+}
+
+function addToken(id, url, u, v, owner, broadcast) {
+  if (tokens[id]) return; // already exists locally (e.g. echo of our own broadcast never happens, but late-join resync could repeat)
+  const color = owner==='dm' ? EMBER : GOLD;
+  const {grp, disc} = makeTokenMesh(url, color);
+  disc.userData.tokenId = id;
+  grp.position.copy(mapUVToWorld(u, v));
+  scene.add(grp);
+  tokens[id] = {grp, disc, url, u, v, owner, lastBroadcast:0};
+  if (broadcast) broadcastToken({type:'tokenAdd', id, url, u, v, owner}, true);
+}
+
+function moveToken(id, u, v, broadcast, reliable) {
+  const t = tokens[id];
+  if (!t) return;
+  t.u=u; t.v=v;
+  t.grp.position.copy(mapUVToWorld(u, v));
+  if (broadcast) broadcastToken({type:'tokenMove', id, u, v}, !!reliable);
+}
+
+function removeToken(id, broadcast) {
+  const t = tokens[id];
+  if (!t) return;
+  scene.remove(t.grp);
+  delete tokens[id];
+  if (broadcast) broadcastToken({type:'tokenRemove', id}, true);
+}
+
+async function broadcastToken(msg, reliable) {
+  if (!agoraClient) return;
+  try {
+    await agoraClient.sendStreamMessage(new TextEncoder().encode(JSON.stringify(msg)), reliable);
+  } catch(e) { console.warn('token broadcast failed:', e); }
 }
 
 // ══════════ SECRET ROOM ══════════
@@ -1205,6 +1300,26 @@ function animate() {
   updateListener();
   updateMusicIsolation();
 
+  // held token follows the crosshair across the map, throttled network
+  // update so everyone sees it move live during a drag, not just on drop
+  if (heldTokenId && tokens[heldTokenId] && battleMapMesh) {
+    tokenRaycaster.setFromCamera({x:0,y:0}, camera);
+    const hit = tokenRaycaster.intersectObject(battleMapMesh)[0];
+    if (hit) {
+      // Position directly from the raycast hit every frame (smoothest,
+      // exact) — only the throttled network broadcast below goes through
+      // the u/v round-trip, so it doesn't fight this with a tiny per-frame
+      // reposition of its own.
+      tokens[heldTokenId].grp.position.copy(hit.point);
+      const now = performance.now();
+      if (now - tokens[heldTokenId].lastBroadcast > POS_MS) {
+        tokens[heldTokenId].lastBroadcast = now;
+        tokens[heldTokenId].u = hit.uv.x; tokens[heldTokenId].v = hit.uv.y;
+        broadcastToken({type:'tokenMove', id:heldTokenId, u:hit.uv.x, v:hit.uv.y}, false);
+      }
+    }
+  }
+
   // avatars
   let nearDist=Infinity, nearName=null;
   for (const [uid,u] of Object.entries(users)) {
@@ -1325,11 +1440,16 @@ async function initAgora(appId, room, myName, asDM, token) {
       grp.position.set(px,0,pz);
       users[uid]={name:'User-'+uid,grp,vidMesh,targetX:px,targetZ:pz,targetYaw:pyaw};
       delete pendingPos[uid];
-      // A player who joins after the DM already set a map never received
-      // that original broadcast — Agora's data channel only reaches
-      // clients connected at send time, nothing is replayed for latecomers.
-      // Re-announcing on every new join covers that gap.
-      if (isDM && currentMapUrl) broadcastMap(currentMapUrl);
+      // A player who joins after the DM already set a map/tokens never
+      // received those original broadcasts — Agora's data channel only
+      // reaches clients connected at send time, nothing is replayed for
+      // latecomers. Re-announcing on every new join covers that gap.
+      if (isDM) {
+        if (currentMapUrl) broadcastMap(currentMapUrl);
+        Object.entries(tokens).forEach(([id,t])=>{
+          broadcastToken({type:'tokenAdd', id, url:t.url, u:t.u, v:t.v, owner:t.owner}, true);
+        });
+      }
     }
     if (mediaType==='video') {
       users[uid].videoTrack=ru.videoTrack;
@@ -1414,6 +1534,15 @@ async function initAgora(appId, room, myName, asDM, token) {
       }
       if(msg.type==='map'){
         setBattleMap(msg.url||null);
+      }
+      if(msg.type==='tokenAdd'){
+        addToken(msg.id, msg.url, msg.u, msg.v, msg.owner, false);
+      }
+      if(msg.type==='tokenMove'){
+        moveToken(msg.id, msg.u, msg.v, false);
+      }
+      if(msg.type==='tokenRemove'){
+        removeToken(msg.id, false);
       }
       if(msg.type==='name'&&users[uid]){
         users[uid].name=msg.name;
@@ -1663,7 +1792,7 @@ document.getElementById('map-file').addEventListener('change', async(e)=>{
   const stat=document.getElementById('map-stat');
   stat.textContent='Lädt hoch…'; stat.className='mstat';
   try{
-    const url=await uploadMapImage(file);
+    const url=await uploadImage(file);
     setBattleMap(url);
     await broadcastMap(url);
     stat.textContent='▶ Karte aktiv'; stat.className='mstat on';
@@ -1679,6 +1808,23 @@ document.getElementById('map-clear-btn').addEventListener('click', async()=>{
   document.getElementById('map-stat').textContent='Keine Karte aktiv';
   document.getElementById('map-stat').className='mstat';
   document.getElementById('map-clear-btn').style.display='none';
+});
+
+document.getElementById('token-add-btn').addEventListener('click',()=>{
+  document.getElementById('token-file').click();
+});
+document.getElementById('token-file').addEventListener('change', async(e)=>{
+  const file=e.target.files[0];
+  e.target.value='';
+  if(!file) return;
+  try{
+    const url=await uploadImage(file);
+    const id=Date.now()+'-'+Math.floor(Math.random()*1e6);
+    const u=0.5+(Math.random()-0.5)*0.1, v=0.5+(Math.random()-0.5)*0.1;
+    addToken(id, url, u, v, 'dm', true);
+  }catch(err){
+    console.warn('token upload failed:', err);
+  }
 });
 
 document.getElementById('btn-leave').addEventListener('click',async()=>{
