@@ -185,6 +185,13 @@ canvas{display:block}
     <button class="pb" id="share-btn">🔊 Tab-Audio streamen</button>
     <div class="mstat" id="mstat">Inaktiv — Tab im Browser auswählen</div>
   </div>
+  <div class="gm-sec">
+    <div class="gstt">Kampfkarte</div>
+    <input type="file" id="map-file" accept="image/*" style="display:none"/>
+    <button class="pb" id="map-upload-btn">🗺 Karte hochladen</button>
+    <button class="pb" id="map-clear-btn" style="display:none">✕ Karte entfernen</button>
+    <div class="mstat" id="map-stat">Keine Karte aktiv</div>
+  </div>
 </div>
 
 <div id="prox"></div>
@@ -230,6 +237,14 @@ let renderer, scene, camera, clock;
 let particleMesh, emberMesh, starSphere;
 let cLight, mLight, hearthLight;
 let doorWallInfo; // NE-chamfer doorway to the secret room — used for the movement passage
+
+// ══════════ COMBAT MAP ══════════
+// Unsigned Cloudinary upload preset — cloud name and preset name are public
+// identifiers, not secrets; access control lives in the preset's own
+// restrictions (image-only, size cap), not in hiding these.
+const CLOUDINARY_CLOUD = 'su0cgmgw';
+const CLOUDINARY_PRESET = 'fantasy-room';
+let battleMapMesh = null, defaultMapTexture = null, currentMapUrl = null;
 
 // player
 const playerPos = new THREE.Vector3(0, EYE_H, 3.2);
@@ -653,9 +668,10 @@ function buildTable() {
   for(let i=20;i<440;i+=20){ mctx.beginPath(); mctx.moveTo(i,0); mctx.lineTo(i,200); mctx.stroke(); }
   for(let i=20;i<200;i+=20){ mctx.beginPath(); mctx.moveTo(0,i); mctx.lineTo(440,i); mctx.stroke(); }
   drawCompassRose(mctx,220,100,55,'rgba(224,184,76,0.16)');
-  const map=new THREE.Mesh(new THREE.PlaneGeometry(TL*0.72,TW*0.7),
-    new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(mc)}));
-  map.rotation.x=-Math.PI/2; map.position.set(0,TY-0.008,0); scene.add(map);
+  defaultMapTexture=new THREE.CanvasTexture(mc);
+  battleMapMesh=new THREE.Mesh(new THREE.PlaneGeometry(TL*0.72,TW*0.7),
+    new THREE.MeshBasicMaterial({map:defaultMapTexture}));
+  battleMapMesh.rotation.x=-Math.PI/2; battleMapMesh.position.set(0,TY-0.008,0); scene.add(battleMapMesh);
   const mapRim=new THREE.Mesh(new THREE.PlaneGeometry(TL*0.72+0.03,TW*0.7+0.03),
     mat(GOLD,GOLD,1.0,0.4,0.1));
   mapRim.rotation.x=-Math.PI/2; mapRim.position.set(0,TY-0.01,0); scene.add(mapRim);
@@ -704,6 +720,52 @@ function buildTable() {
       lbl.rotation.x=-Math.PI/2; lbl.position.set(x,y+0.03,z); scene.add(lbl);
     }
   });
+}
+
+// Applies (or clears) the combat map on the table's recessed battlemap
+// surface. Called both locally (right after the DM's own upload, for
+// instant feedback) and from the network handler when someone else's map
+// update arrives.
+function setBattleMap(url) {
+  currentMapUrl = url;
+  if (!battleMapMesh) return;
+  if (!url) {
+    battleMapMesh.material.map = defaultMapTexture;
+    battleMapMesh.material.needsUpdate = true;
+    battleMapMesh.scale.set(1,1,1);
+    return;
+  }
+  new THREE.TextureLoader().load(url, tex => {
+    // Fit the image inside the fixed recessed area without distorting it —
+    // shrink along whichever axis the image is relatively narrower on.
+    const boundW = TABLE_TL*0.72, boundH = TABLE_TW*0.7;
+    const imgAspect = tex.image.width / tex.image.height;
+    const boundAspect = boundW / boundH;
+    let sx=1, sy=1;
+    if (imgAspect > boundAspect) sy = boundAspect/imgAspect;
+    else sx = imgAspect/boundAspect;
+    battleMapMesh.material.map = tex;
+    battleMapMesh.material.needsUpdate = true;
+    battleMapMesh.scale.set(sx, sy, 1);
+  });
+}
+
+async function uploadMapImage(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('upload_preset', CLOUDINARY_PRESET);
+  const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`, {method:'POST', body:fd});
+  if (!res.ok) throw new Error('Cloudinary-Upload fehlgeschlagen: '+res.status);
+  const data = await res.json();
+  return data.secure_url;
+}
+
+async function broadcastMap(url) {
+  if (!agoraClient) return;
+  try {
+    await agoraClient.sendStreamMessage(
+      new TextEncoder().encode(JSON.stringify({type:'map', url})), true);
+  } catch(e) { console.warn('map broadcast failed:', e); }
 }
 
 // ══════════ SECRET ROOM ══════════
@@ -1260,6 +1322,11 @@ async function initAgora(appId, room, myName, asDM, token) {
       grp.position.set(px,0,pz);
       users[uid]={name:'User-'+uid,grp,vidMesh,targetX:px,targetZ:pz,targetYaw:pyaw};
       delete pendingPos[uid];
+      // A player who joins after the DM already set a map never received
+      // that original broadcast — Agora's data channel only reaches
+      // clients connected at send time, nothing is replayed for latecomers.
+      // Re-announcing on every new join covers that gap.
+      if (isDM && currentMapUrl) broadcastMap(currentMapUrl);
     }
     if (mediaType==='video') {
       users[uid].videoTrack=ru.videoTrack;
@@ -1341,6 +1408,9 @@ async function initAgora(appId, room, myName, asDM, token) {
           // User not yet created — buffer it
           pendingPos[uid]={x:msg.x,z:msg.z,yaw:msg.yaw};
         }
+      }
+      if(msg.type==='map'){
+        setBattleMap(msg.url||null);
       }
       if(msg.type==='name'&&users[uid]){
         users[uid].name=msg.name;
@@ -1579,6 +1649,34 @@ document.getElementById('btn-audiomode').addEventListener('click',()=>{
 
 document.getElementById('btn-music').addEventListener('click',toggleStream);
 document.getElementById('share-btn').addEventListener('click',toggleStream);
+
+document.getElementById('map-upload-btn').addEventListener('click',()=>{
+  document.getElementById('map-file').click();
+});
+document.getElementById('map-file').addEventListener('change', async(e)=>{
+  const file=e.target.files[0];
+  e.target.value=''; // allow re-selecting the same file next time
+  if(!file) return;
+  const stat=document.getElementById('map-stat');
+  stat.textContent='Lädt hoch…'; stat.className='mstat';
+  try{
+    const url=await uploadMapImage(file);
+    setBattleMap(url);
+    await broadcastMap(url);
+    stat.textContent='▶ Karte aktiv'; stat.className='mstat on';
+    document.getElementById('map-clear-btn').style.display='block';
+  }catch(err){
+    console.warn('map upload failed:', err);
+    stat.textContent='Fehler beim Hochladen'; stat.className='mstat';
+  }
+});
+document.getElementById('map-clear-btn').addEventListener('click', async()=>{
+  setBattleMap(null);
+  await broadcastMap(null);
+  document.getElementById('map-stat').textContent='Keine Karte aktiv';
+  document.getElementById('map-stat').className='mstat';
+  document.getElementById('map-clear-btn').style.display='none';
+});
 
 document.getElementById('btn-leave').addEventListener('click',async()=>{
   try{
