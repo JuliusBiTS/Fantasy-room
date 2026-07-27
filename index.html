@@ -194,6 +194,11 @@ canvas{display:block}
   </div>
   <div class="gm-sec">
     <div class="gstt">Token</div>
+    <select class="pi" id="token-category">
+      <option value="player">Spieler (Teal)</option>
+      <option value="ally">Verbündeter (Grün)</option>
+      <option value="enemy" selected>Gegner (Rot)</option>
+    </select>
     <input type="file" id="token-file" accept="image/*" style="display:none"/>
     <button class="pb" id="token-add-btn" title="F: aufnehmen/ablegen · X: entfernen (während gehalten)">➕ Token hinzufügen</button>
     <div class="mstat">F: aufnehmen/ablegen · X: entfernen</div>
@@ -313,12 +318,15 @@ document.addEventListener('keydown', e => {
     velY = JUMP_FORCE;
     e.preventDefault();
   }
-  // Token pickup/drop/remove — DM-only for now (all tokens are DM-added
-  // "monster" tokens until player-owned tokens land). Crosshair-based
-  // rather than a free mouse cursor, since the room stays pointer-locked
-  // during normal play — matches the existing WASD/mouse-look paradigm
-  // instead of introducing a separate cursor mode.
-  if (e.code === 'KeyF' && isLocked && isDM && battleMapMesh) {
+  // Token pickup/drop/remove. The DM can move any token; a player can only
+  // move "player"-category tokens (their own character), not ally/enemy
+  // ones — there's no per-player identity system in this app (no accounts,
+  // no names), so this is category-based rather than assigned to one
+  // specific player, but it still keeps players from repositioning the
+  // DM's monsters. Crosshair-based rather than a free mouse cursor, since
+  // the room stays pointer-locked during normal play — matches the
+  // existing WASD/mouse-look paradigm instead of a separate cursor mode.
+  if (e.code === 'KeyF' && isLocked && battleMapMesh) {
     if (heldTokenId) {
       tokenRaycaster.setFromCamera({x:0,y:0}, camera);
       const hit = tokenRaycaster.intersectObject(battleMapMesh)[0];
@@ -328,7 +336,11 @@ document.addEventListener('keydown', e => {
       tokenRaycaster.setFromCamera({x:0,y:0}, camera);
       const meshes = Object.values(tokens).map(t=>t.disc);
       const hit = tokenRaycaster.intersectObjects(meshes)[0];
-      if (hit) heldTokenId = hit.object.userData.tokenId;
+      if (hit) {
+        const id = hit.object.userData.tokenId;
+        const canMove = isDM || tokens[id]?.category==='player';
+        if (canMove) heldTokenId = id;
+      }
     }
   }
   if (e.code === 'KeyX' && isLocked && isDM && heldTokenId) {
@@ -832,15 +844,17 @@ function makeTokenMesh(url, color) {
   return {grp, disc};
 }
 
-function addToken(id, url, u, v, owner, broadcast) {
+const TOKEN_COLORS = {player:TEAL, ally:EMERALD, enemy:EMBER};
+
+function addToken(id, url, u, v, category, broadcast) {
   if (tokens[id]) return; // already exists locally (e.g. echo of our own broadcast never happens, but late-join resync could repeat)
-  const color = owner==='dm' ? EMBER : GOLD;
+  const color = TOKEN_COLORS[category] || EMBER;
   const {grp, disc} = makeTokenMesh(url, color);
   disc.userData.tokenId = id;
   grp.position.copy(mapUVToWorld(u, v));
   scene.add(grp);
-  tokens[id] = {grp, disc, url, u, v, owner, lastBroadcast:0};
-  if (broadcast) broadcastToken({type:'tokenAdd', id, url, u, v, owner}, true);
+  tokens[id] = {grp, disc, url, u, v, category, lastBroadcast:0};
+  if (broadcast) broadcastToken({type:'tokenAdd', id, url, u, v, category}, true);
 }
 
 function moveToken(id, u, v, broadcast, reliable) {
@@ -1447,7 +1461,7 @@ async function initAgora(appId, room, myName, asDM, token) {
       if (isDM) {
         if (currentMapUrl) broadcastMap(currentMapUrl);
         Object.entries(tokens).forEach(([id,t])=>{
-          broadcastToken({type:'tokenAdd', id, url:t.url, u:t.u, v:t.v, owner:t.owner}, true);
+          broadcastToken({type:'tokenAdd', id, url:t.url, u:t.u, v:t.v, category:t.category}, true);
         });
       }
     }
@@ -1536,7 +1550,7 @@ async function initAgora(appId, room, myName, asDM, token) {
         setBattleMap(msg.url||null);
       }
       if(msg.type==='tokenAdd'){
-        addToken(msg.id, msg.url, msg.u, msg.v, msg.owner, false);
+        addToken(msg.id, msg.url, msg.u, msg.v, msg.category, false);
       }
       if(msg.type==='tokenMove'){
         moveToken(msg.id, msg.u, msg.v, false);
@@ -1821,7 +1835,8 @@ document.getElementById('token-file').addEventListener('change', async(e)=>{
     const url=await uploadImage(file);
     const id=Date.now()+'-'+Math.floor(Math.random()*1e6);
     const u=0.5+(Math.random()-0.5)*0.1, v=0.5+(Math.random()-0.5)*0.1;
-    addToken(id, url, u, v, 'dm', true);
+    const category=document.getElementById('token-category').value;
+    addToken(id, url, u, v, category, true);
   }catch(err){
     console.warn('token upload failed:', err);
   }
