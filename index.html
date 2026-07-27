@@ -992,12 +992,31 @@ function wireSpatial(uid, track) {
     const pan=audioCtx.createPanner();
     pan.panningModel='HRTF'; pan.distanceModel='inverse';
     pan.refDistance=1.2; pan.maxDistance=40; pan.rolloffFactor=1.4;
+
+    // Two parallel paths so the spatial/flat toggle is a real bypass, not a
+    // trick played on the panner: panGain carries the HRTF-positioned
+    // signal, flatGain carries the same source completely unprocessed — no
+    // distance model, no reference point in the room at all, same as a
+    // normal call. Only one path is ever audible; setPannerPos() below
+    // crossfades between them every frame based on spatialMode.
+    const panGain=audioCtx.createGain();
+    const flatGain=audioCtx.createGain();
+    panGain.gain.value = spatialMode?1:0;
+    flatGain.gain.value = spatialMode?0:1;
+
     // Isolation gate: hard-muted whenever speaker and listener are on
     // opposite sides of the secret-room doorway (see isInSecretWing).
+    // Applies after the crossfade, so it holds in either audio mode.
     const isoGain=audioCtx.createGain();
     isoGain.gain.value=1;
-    src.connect(pan); pan.connect(isoGain); isoGain.connect(audioCtx.destination);
+
+    src.connect(pan); pan.connect(panGain); panGain.connect(isoGain);
+    src.connect(flatGain); flatGain.connect(isoGain);
+    isoGain.connect(audioCtx.destination);
+
     users[uid].panner=pan;
+    users[uid].panGain=panGain;
+    users[uid].flatGain=flatGain;
     users[uid].isoGain=isoGain;
     setPannerPos(uid);
   } catch(e) {
@@ -1028,20 +1047,14 @@ function setPannerPos(uid) {
   const u=users[uid];
   if (!u||!u.panner||!u.grp) return;
   const p=u.grp.position, t=audioCtx.currentTime;
-  if (spatialMode) {
-    u.panner.positionX.setValueAtTime(p.x,t);
-    u.panner.positionY.setValueAtTime(p.y+EYE_H,t);
-    u.panner.positionZ.setValueAtTime(p.z,t);
-  } else {
-    // Flat mode: collapse the panner onto the listener's own position so
-    // HRTF has no distance/direction left to work with — full, equal
-    // volume for everyone. The isolation gate below (secret-room privacy)
-    // still applies exactly as in spatial mode; this only removes the
-    // positional cue, not who you can hear.
-    u.panner.positionX.setValueAtTime(playerPos.x,t);
-    u.panner.positionY.setValueAtTime(playerPos.y,t);
-    u.panner.positionZ.setValueAtTime(playerPos.z+0.05,t);
-  }
+  // Always keep the panner at the speaker's real position — harmless while
+  // muted via panGain below, and means flipping back to spatial mode is
+  // instantly correct with no re-sync needed.
+  u.panner.positionX.setValueAtTime(p.x,t);
+  u.panner.positionY.setValueAtTime(p.y+EYE_H,t);
+  u.panner.positionZ.setValueAtTime(p.z,t);
+  if (u.panGain) u.panGain.gain.setTargetAtTime(spatialMode?1:0, t, 0.1);
+  if (u.flatGain) u.flatGain.gain.setTargetAtTime(spatialMode?0:1, t, 0.1);
   if (u.isoGain) {
     const sameZone = isInSecretWing(p.x,p.z) === isInSecretWing(playerPos.x,playerPos.z);
     u.isoGain.gain.setTargetAtTime(sameZone ? 1 : 0, t, 0.1);
@@ -1287,6 +1300,8 @@ async function initAgora(appId, room, myName, asDM) {
       // before wiring a fresh one, so repeated mute/unmute cycles don't
       // leak orphaned panner/gain nodes over a long session.
       if (users[uid].panner) { try{users[uid].panner.disconnect();}catch(_){} }
+      if (users[uid].panGain) { try{users[uid].panGain.disconnect();}catch(_){} }
+      if (users[uid].flatGain) { try{users[uid].flatGain.disconnect();}catch(_){} }
       if (users[uid].isoGain) { try{users[uid].isoGain.disconnect();}catch(_){} }
       users[uid].audioTrack = ru.audioTrack;
       users[uid].hasAudio = true;
@@ -1302,8 +1317,12 @@ async function initAgora(appId, room, myName, asDM) {
       // producing data) — a re-publish on unmute rebuilds it from scratch
       // in the 'user-published' handler above.
       if (users[ru.uid].panner) { try{users[ru.uid].panner.disconnect();}catch(_){} }
+      if (users[ru.uid].panGain) { try{users[ru.uid].panGain.disconnect();}catch(_){} }
+      if (users[ru.uid].flatGain) { try{users[ru.uid].flatGain.disconnect();}catch(_){} }
       if (users[ru.uid].isoGain) { try{users[ru.uid].isoGain.disconnect();}catch(_){} }
       users[ru.uid].panner=null;
+      users[ru.uid].panGain=null;
+      users[ru.uid].flatGain=null;
       users[ru.uid].isoGain=null;
       users[ru.uid].hasAudio=false;
     }
