@@ -944,6 +944,19 @@ function makeAvatar(uid, name, asDM) {
   const ring = new THREE.Mesh(new THREE.TorusGeometry(0.32,0.025,8,24),
     mat(col,col,3)); ring.rotation.x=Math.PI/2; ring.position.y=0.65; grp.add(ring);
 
+  // Front brooch + back cloak — the body already rotates to each player's
+  // real yaw (see broadcastPos/targetYaw below), but a plain symmetric
+  // cylinder makes that rotation invisible. These give it a silhouette so
+  // "which way is this person actually facing" reads at a glance, while the
+  // webcam head below stays billboarded so nobody's video ever disappears.
+  const gem = new THREE.Mesh(new THREE.SphereGeometry(0.045,10,10), mat(col,col,2.2,0.2,0.4));
+  gem.position.set(0, 0.86, -0.285);
+  grp.add(gem);
+  const cloak = new THREE.Mesh(new THREE.PlaneGeometry(0.5,0.95),
+    mat(asDM?0x0d1820:0x1a1208,0,0,0.85,0));
+  cloak.position.set(0, 0.55, 0.3);
+  grp.add(cloak);
+
   // Webcam AS head — billboard square at head height
   const HEAD_SIZE = 0.72;
   const vidGeo = new THREE.PlaneGeometry(HEAD_SIZE, HEAD_SIZE);
@@ -1418,7 +1431,7 @@ async function broadcastPos(){
     if(users[localUID]?.grp){
       users[localUID].grp.position.x=playerPos.x;
       users[localUID].grp.position.z=playerPos.z;
-      users[localUID].grp.rotation.y=yaw+Math.PI;
+      users[localUID].grp.rotation.y=yaw;
     }
   }catch(e){
     // Log once, not 20x/sec — a persistent failure here means this client's
