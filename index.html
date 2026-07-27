@@ -671,10 +671,13 @@ function buildTable() {
   defaultMapTexture=new THREE.CanvasTexture(mc);
   battleMapMesh=new THREE.Mesh(new THREE.PlaneGeometry(TL*0.72,TW*0.7),
     new THREE.MeshBasicMaterial({map:defaultMapTexture}));
-  battleMapMesh.rotation.x=-Math.PI/2; battleMapMesh.position.set(0,TY-0.008,0); scene.add(battleMapMesh);
+  // Sit just above the table top's outer face (TY+0.045), not below it —
+  // a flat plane placed inside the opaque top box is fully occluded by
+  // that box's own top face and can never be seen, texture or not.
+  battleMapMesh.rotation.x=-Math.PI/2; battleMapMesh.position.set(0,TY+0.05,0); scene.add(battleMapMesh);
   const mapRim=new THREE.Mesh(new THREE.PlaneGeometry(TL*0.72+0.03,TW*0.7+0.03),
     mat(GOLD,GOLD,1.0,0.4,0.1));
-  mapRim.rotation.x=-Math.PI/2; mapRim.position.set(0,TY-0.01,0); scene.add(mapRim);
+  mapRim.rotation.x=-Math.PI/2; mapRim.position.set(0,TY+0.048,0); scene.add(mapRim);
 
   // DM privacy screen — low gold-framed panel at the head of the table.
   // The panel is wide along local Z, so the lean must rotate around Z (the
