@@ -119,10 +119,6 @@ canvas{display:block}
       <input class="fi" id="f-room" type="text" placeholder="sternenhof-sitzung-01" autocomplete="off"/>
       <div class="fh">Alle Spieler müssen denselben Code eingeben</div>
     </div>
-    <div class="fg">
-      <label class="fl" for="f-name">Dein Name / Charakter</label>
-      <input class="fi" id="f-name" type="text" placeholder="Elara"/>
-    </div>
     <label class="dm-row">
       <input type="checkbox" id="f-isdm"/>
       <span class="tpill"></span>
@@ -154,6 +150,7 @@ canvas{display:block}
 <div id="ctrl" style="display:none">
   <button class="cb" id="btn-mic">🎤 <span>Mic</span></button>
   <button class="cb" id="btn-cam">📷 <span>Kamera</span></button>
+  <button class="cb" id="btn-audiomode" title="Zwischen räumlichem Klang und gleicher Lautstärke für alle wechseln">🎧 <span>Räumlich</span></button>
   <div class="cb-sep"></div>
   <button class="cb dm" id="btn-music" style="display:none">🎵 <span>Musik</span></button>
   <div class="cb-sep" id="sep-dm" style="display:none"></div>
@@ -258,6 +255,7 @@ let allMuted = false; // DM: current broadcast mute-all state
 const users = {};
 let audioCtx = null;
 let musicGain = null, musicUid = null; // ambient music's own isolation gain node
+let spatialMode = true; // per-listener preference: true = positional 3D audio, false = flat, same volume for everyone
 
 // ══════════ POINTER LOCK ══════════
 const canvas = document.getElementById('c');
@@ -916,23 +914,8 @@ function buildParticles() {
 }
 
 // ══════════ AVATAR ══════════
-function nameTex(name, hex) {
-  const c=document.createElement('canvas'); c.width=300; c.height=60;
-  const ctx=c.getContext('2d');
-  ctx.clearRect(0,0,300,60);
-  ctx.fillStyle='rgba(6,8,14,0.85)';
-  ctx.beginPath(); ctx.roundRect(0,0,300,60,8); ctx.fill();
-  ctx.strokeStyle=hex; ctx.lineWidth=1.5;
-  ctx.beginPath(); ctx.roundRect(1,1,298,58,7); ctx.stroke();
-  ctx.fillStyle=hex; ctx.font='bold 21px "EB Garamond",serif';
-  ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText(name.substring(0,18).toUpperCase(),150,31);
-  return new THREE.CanvasTexture(c);
-}
-
-function makeAvatar(uid, name, asDM) {
+function makeAvatar(asDM) {
   const col  = asDM ? TEAL : GOLD;
-  const hex  = asDM ? '#3aa0c4' : '#e0b84c';
   const bmat = mat(asDM?0x16232f:0x261d10, asDM?0x1c2f3d:0x2e2313, 0.4, 0.5, 0.35);
   const grp  = new THREE.Group();
 
@@ -974,15 +957,6 @@ function makeAvatar(uid, name, asDM) {
   edges.position.y = 1.55;
   edges.userData.bill = true;
   grp.add(edges);
-
-  // Name label — just above head
-  const lbl = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.4, 0.3),
-    new THREE.MeshBasicMaterial({map:nameTex(name,hex), transparent:true, side:THREE.DoubleSide})
-  );
-  lbl.position.y = 2.05;
-  lbl.userData.bill = true;
-  grp.add(lbl);
 
   scene.add(grp);
   return { grp, vidMesh };
@@ -1054,9 +1028,20 @@ function setPannerPos(uid) {
   const u=users[uid];
   if (!u||!u.panner||!u.grp) return;
   const p=u.grp.position, t=audioCtx.currentTime;
-  u.panner.positionX.setValueAtTime(p.x,t);
-  u.panner.positionY.setValueAtTime(p.y+EYE_H,t);
-  u.panner.positionZ.setValueAtTime(p.z,t);
+  if (spatialMode) {
+    u.panner.positionX.setValueAtTime(p.x,t);
+    u.panner.positionY.setValueAtTime(p.y+EYE_H,t);
+    u.panner.positionZ.setValueAtTime(p.z,t);
+  } else {
+    // Flat mode: collapse the panner onto the listener's own position so
+    // HRTF has no distance/direction left to work with — full, equal
+    // volume for everyone. The isolation gate below (secret-room privacy)
+    // still applies exactly as in spatial mode; this only removes the
+    // positional cue, not who you can hear.
+    u.panner.positionX.setValueAtTime(playerPos.x,t);
+    u.panner.positionY.setValueAtTime(playerPos.y,t);
+    u.panner.positionZ.setValueAtTime(playerPos.z+0.05,t);
+  }
   if (u.isoGain) {
     const sameZone = isInSecretWing(p.x,p.z) === isInSecretWing(playerPos.x,playerPos.z);
     u.isoGain.gain.setTargetAtTime(sameZone ? 1 : 0, t, 0.1);
@@ -1264,7 +1249,7 @@ async function initAgora(appId, room, myName, asDM) {
     }
 
     if (!users[uid]) {
-      const {grp,vidMesh}=makeAvatar(uid,'User-'+uid,false);
+      const {grp,vidMesh}=makeAvatar(false);
       // Use buffered position if we got pos before user-published
       const px = pendingPos[uid]?.x ?? (Math.random()-.5)*1.5;
       const pz = pendingPos[uid]?.z ?? (Math.random()-.5)*1.5;
@@ -1350,8 +1335,6 @@ async function initAgora(appId, room, myName, asDM) {
       }
       if(msg.type==='name'&&users[uid]){
         users[uid].name=msg.name;
-        const lbl=users[uid].grp?.children.find(c=>c.userData.bill&&c.geometry?.parameters?.width>1);
-        if(lbl){lbl.material.map=nameTex(msg.name,msg.isDM?'#3aa0c4':'#e0b84c');lbl.material.needsUpdate=true;}
       }
       if(msg.type==='forceMute'){
         // Only players act on this — the DM never receives their own broadcast.
@@ -1395,7 +1378,7 @@ async function initAgora(appId, room, myName, asDM) {
   await agoraClient.publish(localVideo ? [localAudio,localVideo] : [localAudio]);
 
   // local avatar
-  const {grp,vidMesh}=makeAvatar(localUID,myName+(asDM?' [DM]':''),asDM);
+  const {grp,vidMesh}=makeAvatar(asDM);
   grp.position.set(playerPos.x,0,playerPos.z);
   grp.visible=false;
   users[localUID]={name:myName,grp,vidMesh,isLocal:true,isDM:asDM};
@@ -1496,12 +1479,11 @@ async function toggleStream(){
 document.getElementById('join-btn').addEventListener('click', async()=>{
   const appId=document.getElementById('f-appid').value.trim();
   const room=document.getElementById('f-room').value.trim();
-  const name=document.getElementById('f-name').value.trim();
   isDM=document.getElementById('f-isdm').checked;
+  const name=isDM?'DM':'Spieler';
   const err=document.getElementById('jerr');
   if(appId.length<16){err.textContent='Bitte gültige Agora App-ID eingeben.';return;}
   if(!room){err.textContent='Bitte Raum-Code eingeben.';return;}
-  if(!name){err.textContent='Bitte Namen eingeben.';return;}
   err.textContent='';
   localName=name;
   const btn=document.getElementById('join-btn');
@@ -1578,6 +1560,13 @@ document.getElementById('btn-cam').addEventListener('click',async()=>{
   b.classList.toggle('off',camOff);
 });
 
+document.getElementById('btn-audiomode').addEventListener('click',()=>{
+  spatialMode=!spatialMode;
+  const b=document.getElementById('btn-audiomode');
+  b.querySelector('span').textContent=spatialMode?'Räumlich':'Gleich laut';
+  b.classList.toggle('str',!spatialMode);
+});
+
 document.getElementById('btn-music').addEventListener('click',toggleStream);
 document.getElementById('share-btn').addEventListener('click',toggleStream);
 
@@ -1606,7 +1595,7 @@ document.getElementById('sp-btn').addEventListener('click',()=>{
   document.getElementById('sp-wrap').style.display='block';
 });
 
-['f-appid','f-room','f-name'].forEach(id=>{
+['f-appid','f-room'].forEach(id=>{
   document.getElementById(id).addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('join-btn').click();});
 });
 </script>
