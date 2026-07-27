@@ -859,7 +859,12 @@ function addToken(id, url, u, v, category, size, broadcast) {
   const color = TOKEN_COLORS[category] || EMBER;
   const {grp, disc} = makeTokenMesh(url, color);
   const scale = TOKEN_SCALES[size] || 1.0;
-  grp.scale.set(scale, scale, 1);
+  // The disc/ring are rotated -90° on X to lie flat, which maps their
+  // local Y-radius onto the group's Z axis, not Y (Y becomes the vertical/
+  // normal direction post-rotation). Scaling group X+Y here would only
+  // stretch one radius and leave the other untouched — an oval, not a
+  // bigger circle. X and Z are the two in-plane radii; Y stays 1.
+  grp.scale.set(scale, 1, scale);
   disc.userData.tokenId = id;
   grp.position.copy(mapUVToWorld(u, v));
   scene.add(grp);
