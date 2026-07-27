@@ -447,23 +447,48 @@ function buildDome() {
   const medDot=new THREE.Mesh(new THREE.SphereGeometry(0.05,10,10),mat(GOLD,GOLD,2.2));
   medDot.position.copy(apex); scene.add(medDot);
 
-  // the rotating night sky — a slow, low-fatigue timekeeper for long sessions
-  const c=document.createElement('canvas'); c.width=1024; c.height=512;
-  const ctx=c.getContext('2d');
-  const grad=ctx.createLinearGradient(0,0,0,512);
-  grad.addColorStop(0,'#0c1c38'); grad.addColorStop(1,'#182c4e');
-  ctx.fillStyle=grad; ctx.fillRect(0,0,1024,512);
-  for(let i=0;i<300;i++){
-    const x=Math.random()*1024, y=Math.random()*512, r=Math.random()*1.5+0.3;
-    ctx.fillStyle=`rgba(255,240,210,${0.25+Math.random()*0.6})`;
-    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
-  }
-  const starTex=new THREE.CanvasTexture(c);
-  starSphere=new THREE.Mesh(
-    new THREE.SphereGeometry(DOME_R*0.985,32,16,0,Math.PI*2,0,Math.PI/2),
-    new THREE.MeshBasicMaterial({map:starTex, side:THREE.BackSide})
-  );
+  // the rotating night sky — a slow, low-fatigue timekeeper for long sessions.
+  // Flat gradient backdrop + stars as real GPU point sprites (not baked into
+  // the backdrop texture), so they stay crisp up close instead of blurring
+  // out from magnifying a small bitmap over a dome this near the player.
+  starSphere=new THREE.Group();
   starSphere.position.y=WALL_H;
+
+  const bgc=document.createElement('canvas'); bgc.width=4; bgc.height=512;
+  const bgctx=bgc.getContext('2d');
+  const grad=bgctx.createLinearGradient(0,0,0,512);
+  grad.addColorStop(0,'#0c1c38'); grad.addColorStop(1,'#182c4e');
+  bgctx.fillStyle=grad; bgctx.fillRect(0,0,4,512);
+  const skyMesh=new THREE.Mesh(
+    new THREE.SphereGeometry(DOME_R*0.985,32,16,0,Math.PI*2,0,Math.PI/2),
+    new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(bgc), side:THREE.BackSide})
+  );
+  starSphere.add(skyMesh);
+
+  function starLayer(count,size,opacity,bright) {
+    const pos=new Float32Array(count*3), col=new Float32Array(count*3);
+    const r=DOME_R*0.98;
+    for(let i=0;i<count;i++){
+      // Uniform sampling over the hemisphere cap (not theta directly), so
+      // stars don't bunch up near the zenith.
+      const cosT=1-Math.random(), sinT=Math.sqrt(1-cosT*cosT), phi=Math.random()*Math.PI*2;
+      pos[i*3]  = r*sinT*Math.cos(phi);
+      pos[i*3+1]= r*cosT;
+      pos[i*3+2]= r*sinT*Math.sin(phi);
+      const b=bright*(0.6+Math.random()*0.4);
+      col[i*3]=b; col[i*3+1]=b*0.94; col[i*3+2]=b*0.82;
+    }
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+    g.setAttribute('color',new THREE.BufferAttribute(col,3));
+    return new THREE.Points(g,new THREE.PointsMaterial({
+      size, sizeAttenuation:false, vertexColors:true,
+      transparent:true, opacity, depthWrite:false, blending:THREE.AdditiveBlending
+    }));
+  }
+  starSphere.add(starLayer(1800,1.4,0.85,0.55)); // bulk of faint, small stars
+  starSphere.add(starLayer(140,2.6,0.95,1.0));   // a few brighter standouts
+
   scene.add(starSphere);
 }
 
