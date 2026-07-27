@@ -119,6 +119,11 @@ canvas{display:block}
       <input class="fi" id="f-room" type="text" placeholder="sternenhof-sitzung-01" autocomplete="off"/>
       <div class="fh">Alle Spieler müssen denselben Code eingeben</div>
     </div>
+    <div class="fg">
+      <label class="fl" for="f-token">Token (nur falls Projekt ein Zertifikat hat)</label>
+      <input class="fi" id="f-token" type="text" placeholder="optional" autocomplete="off" spellcheck="false"/>
+      <div class="fh">Agora-Konsole → Projekt → "Generate Temp Token" (mit UID 0, für diesen Raum-Code). Leer lassen, wenn das Projekt kein Zertifikat hat.</div>
+    </div>
     <label class="dm-row">
       <input type="checkbox" id="f-isdm"/>
       <span class="tpill"></span>
@@ -248,7 +253,7 @@ const JUMP_FORCE = 6;
 const MUSIC_UID_OFFSET = 1000000;
 let agoraClient = null, musicClient = null, localAudio = null, localVideo = null, screenAudio = null;
 let localUID = null, localName = '', isDM = false;
-let joinedAppId = null, joinedRoom = null;
+let joinedAppId = null, joinedRoom = null, joinedToken = null;
 let micMuted = false, camOff = false, streaming = false;
 let forceMuted = false, preForceMuteState = false; // players: muted by the DM, cannot self-unmute
 let allMuted = false; // DM: current broadcast mute-all state
@@ -1228,8 +1233,8 @@ function withTimeout(promise, ms, label) {
 // Buffer for position messages that arrive before user-published
 const pendingPos = {};
 
-async function initAgora(appId, room, myName, asDM) {
-  joinedAppId=appId; joinedRoom=room; // needed later if the DM starts sharing music
+async function initAgora(appId, room, myName, asDM, token) {
+  joinedAppId=appId; joinedRoom=room; joinedToken=token||null; // needed later if the DM starts sharing music
   agoraClient=AgoraRTC.createClient({mode:'rtc',codec:'vp8'});
 
   agoraClient.on('user-published', async (ru, mediaType) => {
@@ -1374,7 +1379,7 @@ async function initAgora(appId, room, myName, asDM) {
   });
 
   localUID=Math.floor(Math.random()*900000)+10000;
-  await agoraClient.join(appId,room,null,localUID);
+  await agoraClient.join(appId,room,joinedToken,localUID);
 
   // getUserMedia can hang indefinitely on some devices/permission states
   // instead of rejecting — confirmed during testing (Agora SDK logged
@@ -1480,7 +1485,7 @@ async function toggleStream(){
     // — so the receiving end never has to guess which of this uid's tracks
     // is the mic and which is the music.
     musicClient=AgoraRTC.createClient({mode:'rtc',codec:'vp8'});
-    await musicClient.join(joinedAppId, joinedRoom, null, localUID + MUSIC_UID_OFFSET);
+    await musicClient.join(joinedAppId, joinedRoom, joinedToken, localUID + MUSIC_UID_OFFSET);
     await musicClient.publish(sa);
     streaming=true;
     document.getElementById('share-btn').textContent='⏹ Stoppen';
@@ -1498,6 +1503,7 @@ async function toggleStream(){
 document.getElementById('join-btn').addEventListener('click', async()=>{
   const appId=document.getElementById('f-appid').value.trim();
   const room=document.getElementById('f-room').value.trim();
+  const token=document.getElementById('f-token').value.trim()||null;
   isDM=document.getElementById('f-isdm').checked;
   const name=isDM?'DM':'Spieler';
   const err=document.getElementById('jerr');
@@ -1511,7 +1517,7 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
     document.getElementById('join-overlay').style.display='none';
     initScene();
     ensureACtx();
-    await initAgora(appId,room,name,isDM);
+    await initAgora(appId,room,name,isDM,token);
     document.getElementById('hud').style.display='flex';
     document.getElementById('ctrl').style.display='flex';
     document.getElementById('hud-room').textContent='RAUM: '+room.toUpperCase();
@@ -1614,7 +1620,7 @@ document.getElementById('sp-btn').addEventListener('click',()=>{
   document.getElementById('sp-wrap').style.display='block';
 });
 
-['f-appid','f-room'].forEach(id=>{
+['f-appid','f-room','f-token'].forEach(id=>{
   document.getElementById(id).addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('join-btn').click();});
 });
 </script>
