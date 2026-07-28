@@ -198,6 +198,7 @@ canvas{display:block}
     <select class="pi" id="token-category">
       <option value="player">Spieler (Teal)</option>
       <option value="ally">Verbündeter (Grün)</option>
+      <option value="companion">Begleiter (Orange)</option>
       <option value="enemy" selected>Gegner (Rot)</option>
     </select>
     <select class="pi" id="token-size">
@@ -241,6 +242,7 @@ const TEAL   = 0x3aa0c4; // astral blue, DM accent
 const EMERALD= 0x3ecf6e; // active/streaming
 const EMBER  = 0xd1495b; // warning
 const AMBER  = 0xe0a458; // candle, lantern & hearth glow
+const ORANGE = 0xe8823c; // companion tokens
 const WOOD   = 0x5a3d22; // warm oak
 const WOOD_DARK=0x3b2717; // dark walnut
 const WOOD_CREAM=0xd8c39c; // cream wainscot panelling
@@ -851,7 +853,7 @@ function makeTokenMesh(url, color) {
   return {grp, disc};
 }
 
-const TOKEN_COLORS = {player:TEAL, ally:EMERALD, enemy:EMBER};
+const TOKEN_COLORS = {player:TEAL, ally:EMERALD, enemy:EMBER, companion:ORANGE};
 const TOKEN_SCALES = {small:0.7, medium:1.0, large:1.5};
 
 function addToken(id, url, u, v, category, size, broadcast) {
