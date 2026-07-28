@@ -185,7 +185,8 @@ canvas{display:block}
   <div class="gm-head">🧭 DM-Pult</div>
   <div class="gm-sec">
     <div class="gstt">Spieler-Steuerung</div>
-    <button class="pb" id="mute-all-btn">🔇 Alle stummschalten</button>
+    <button class="pb" id="mute-all-btn" title="Hotkey: M">🔇 Alle stummschalten</button>
+    <div class="mstat">Hotkey: M</div>
   </div>
   <div class="gm-sec">
     <div class="gstt">Tabletopaudio</div>
@@ -383,6 +384,11 @@ document.addEventListener('keydown', e => {
   if (e.code === 'KeyX' && isLocked && isDM && heldTokenId) {
     removeToken(heldTokenId, true);
     heldTokenId = null;
+  }
+  // DM mute-all hotkey — just clicks the real button so there's only ever
+  // one place that owns the toggle logic.
+  if (e.code === 'KeyM' && isLocked && isDM) {
+    document.getElementById('mute-all-btn').click();
   }
 });
 document.addEventListener('keyup',   e => { keys[e.code] = false; });
