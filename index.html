@@ -109,6 +109,12 @@ body.locked #crosshair{opacity:1}
 #prox{position:fixed;bottom:76px;left:50%;transform:translateX(-50%);font-size:9px;letter-spacing:3px;color:rgba(224,184,76,.55);z-index:200;pointer-events:none;text-transform:uppercase;opacity:0;transition:opacity .5s;white-space:nowrap}
 #prox.show{opacity:1}
 
+/* FOCUS VIEW */
+#focus-overlay{position:fixed;left:24px;bottom:110px;width:340px;background:#000;border:1px solid rgba(224,184,76,.4);box-shadow:0 8px 30px rgba(0,0,0,.6);z-index:210;pointer-events:none}
+#focus-video{width:100%;display:block;aspect-ratio:4/3;object-fit:cover;background:#111}
+#focus-label{position:absolute;top:8px;left:8px;background:rgba(2,4,12,.75);color:#e0b84c;font-family:var(--fm);font-size:10px;letter-spacing:2px;text-transform:uppercase;padding:4px 8px}
+.focus-hint{position:absolute;bottom:8px;right:8px;background:rgba(2,4,12,.75);color:rgba(224,184,76,.7);font-family:var(--fm);font-size:9px;letter-spacing:1px;text-transform:uppercase;padding:4px 8px}
+
 canvas{display:block}
 </style>
 </head>
@@ -235,6 +241,12 @@ canvas{display:block}
 
 <div id="prox"></div>
 
+<div id="focus-overlay" style="display:none">
+  <video id="focus-video" autoplay muted playsinline></video>
+  <div id="focus-label"></div>
+  <div class="focus-hint">F zum Schließen</div>
+</div>
+
 <script>
 'use strict';
 
@@ -248,8 +260,9 @@ const WALL_H       = 3.1;   // wall height, marble+wood, before the dome
 const DOME_R       = 4.8;   // dome hemisphere radius
 const PROX_DIST    = 3.0;
 const POS_MS       = 80;
-const TABLE_TL      = 3.0;  // table length (head-to-foot)
-const TABLE_TW      = 1.3;  // table width (long-side to long-side)
+const TABLE_TL       = 3.0;  // battle map footprint length — the table itself is round (see TABLE_R), this only sizes the recessed rectangular map area inscribed within it
+const TABLE_TW       = 1.3;  // battle map footprint width
+const TABLE_R        = 1.5;  // round table radius — comfortably fits the map above with a clear rim around it
 const SECRET_CORR_W = 1.25; // secret-room corridor width
 const SECRET_CORR_L = 4.8;  // secret-room corridor length — kept long so spatial
                              // audio (inverse falloff, not a hard cutoff) has
@@ -300,6 +313,15 @@ const TOKEN_RADIUS = 0.055;
 const tokens = {}; // id -> {grp, disc, u, v, owner, lastBroadcast}
 let heldTokenId = null;
 const tokenRaycaster = new THREE.Raycaster();
+
+// ══════════ FOCUS VIEW ══════════
+// Look at someone (their video plane) and press F to pop their feed into a
+// larger 2D overlay on your own screen — purely client-side, reuses the
+// same <video> element already streaming their track into the 3D texture.
+// Fixes "can't see the person across the table clearly" without resizing
+// anyone's avatar, which would look wrong for whoever else is looking at
+// that same shared 3D object from a different distance.
+let focusedUid = null;
 
 // player
 const playerPos = new THREE.Vector3(0, EYE_H, 3.2);
@@ -378,6 +400,18 @@ document.addEventListener('keydown', e => {
         const id = hit.object.userData.tokenId;
         const canMove = isDM || tokens[id]?.category==='player';
         if (canMove) heldTokenId = id;
+      } else if (focusedUid) {
+        // Already focused on someone — F closes it regardless of where
+        // you're currently looking, so you don't have to re-aim at their
+        // face just to dismiss it.
+        setFocus(null);
+      } else {
+        // Nothing else under the crosshair — check for a person's face
+        // instead, for the close-up focus view (available to everyone,
+        // not DM-only, unlike token pickup permissions above).
+        const avatarMeshes = Object.values(users).filter(u=>!u.isLocal && u.vidMesh).map(u=>u.vidMesh);
+        const avatarHit = tokenRaycaster.intersectObjects(avatarMeshes)[0];
+        if (avatarHit) setFocus(avatarHit.object.userData.uid);
       }
     }
   }
@@ -777,28 +811,19 @@ function buildFurniture() {
 }
 
 function buildTable() {
-  const TL = TABLE_TL, TW = TABLE_TW, TY = 0.78;
+  const TL = TABLE_TL, TW = TABLE_TW, TY = 0.78, R = TABLE_R;
 
-  // four corner legs
-  [[-TL/2+0.2,-TW/2+0.2],[-TL/2+0.2,TW/2-0.2],
-   [ TL/2-0.2,-TW/2+0.2],[ TL/2-0.2,TW/2-0.2]].forEach(([x,z])=>{
-    const leg=new THREE.Mesh(new THREE.BoxGeometry(0.12,TY-0.09,0.12),mat(WOOD_DARK,0,0,0.55,0.03));
-    leg.position.set(x,(TY-0.09)/2,z); scene.add(leg);
-    const footD=new THREE.Mesh(new THREE.CylinderGeometry(0.1,0.1,0.04,16),mat(STONE,0,0,0.6,0.03));
-    footD.position.set(x,0.02,z); scene.add(footD);
-  });
+  // central pedestal — a round table gets one round base, not four corner legs
+  const pedestal=new THREE.Mesh(new THREE.CylinderGeometry(0.14,0.2,TY-0.09,20),mat(WOOD_DARK,0,0,0.55,0.03));
+  pedestal.position.set(0,(TY-0.09)/2,0); scene.add(pedestal);
+  const footD=new THREE.Mesh(new THREE.CylinderGeometry(0.42,0.42,0.04,28),mat(STONE,0,0,0.6,0.03));
+  footD.position.set(0,0.02,0); scene.add(footD);
 
-  // marble top with gilt rim
-  const top=new THREE.Mesh(new THREE.BoxGeometry(TL,0.09,TW),mat(STONE,0,0,0.5,0.06));
+  // round marble top with a gilt rim
+  const top=new THREE.Mesh(new THREE.CylinderGeometry(R,R,0.09,48),mat(STONE,0,0,0.5,0.06));
   top.position.set(0,TY,0); top.castShadow=true; top.receiveShadow=true; scene.add(top);
-  [-TW/2,TW/2].forEach(z=>{
-    const e=new THREE.Mesh(new THREE.BoxGeometry(TL+0.02,0.04,0.04),mat(GOLD,GOLD,1.8,0));
-    e.position.set(0,TY+0.06,z); scene.add(e);
-  });
-  const dmE=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.04,TW+0.02),mat(TEAL,TEAL,2.2,0));
-  dmE.position.set(-TL/2,TY+0.06,0); scene.add(dmE);
-  const plE=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.04,TW+0.02),mat(GOLD,GOLD,1.8,0));
-  plE.position.set(TL/2,TY+0.06,0); scene.add(plE);
+  const rim=new THREE.Mesh(new THREE.TorusGeometry(R,0.02,8,48),mat(GOLD,GOLD,1.8,0));
+  rim.rotation.x=Math.PI/2; rim.position.set(0,TY+0.06,0); scene.add(rim);
 
   // recessed battlemap
   const mc=document.createElement('canvas'); mc.width=440; mc.height=200;
@@ -829,23 +854,30 @@ function buildTable() {
   panel.position.set(0,0.17,0); screenGrp.add(panel);
   const panelEdge=new THREE.Mesh(new THREE.BoxGeometry(0.03,0.02,TW*0.7+0.02),mat(GOLD,GOLD,1.6,0));
   panelEdge.position.set(0,0.34,0); screenGrp.add(panelEdge);
-  screenGrp.position.set(-TL/2+0.14,TY+0.05,0);
+  // DM's seat is due -X (dir [-1,0] below), the same direction this panel
+  // was already built for on the old rectangular table, so the geometry
+  // and lean rotation carry over unchanged — only the radius changed.
+  screenGrp.position.set(-R+0.14,TY+0.05,0);
   screenGrp.rotation.z=-0.18; // gentle, uniform lean back toward the DM
   scene.add(screenGrp);
 
-  // seats — DM at the head (slightly elevated), four players along the long sides, one at the foot
+  // seats — DM and 3 players evenly spaced 90° apart around the round
+  // table, so nobody is ever meaningfully farther from anyone else the
+  // way the old head/foot rectangular layout put the DM far from whoever
+  // sat at the opposite end.
   const dais=new THREE.Mesh(new THREE.CylinderGeometry(0.5,0.52,0.08,24),mat(WOOD_CREAM,0,0,0.6,0.03));
-  dais.position.set(-(TL/2+0.5),0.04,0); scene.add(dais);
+  dais.position.set(-(R+0.5),0.04,0); scene.add(dais);
 
   const seats=[
-    {x:-(TL/2+0.5), z:0,        y:0.13,  col:TEAL, label:'DM'},
-    {x:-TL/4,        z:-(TW/2+0.55), y:0.012, col:GOLD, label:null},
-    {x: TL/4,        z:-(TW/2+0.55), y:0.012, col:GOLD, label:null},
-    {x:-TL/4,        z: TW/2+0.55,   y:0.012, col:GOLD, label:null},
-    {x: TL/4,        z: TW/2+0.55,   y:0.012, col:GOLD, label:null},
-    {x: TL/2+0.5,    z:0,        y:0.012, col:GOLD, label:null},
+    {dir:[-1,0], col:TEAL, label:'DM'},
+    {dir:[0,-1], col:GOLD, label:null},
+    {dir:[1,0],  col:GOLD, label:null},
+    {dir:[0,1],  col:GOLD, label:null},
   ];
-  seats.forEach(({x,z,y,col,label})=>{
+  seats.forEach(({dir,col,label})=>{
+    const isDmSeat = col===TEAL;
+    const x = dir[0]*(R+0.5), z = dir[1]*(R+0.5);
+    const y = isDmSeat ? 0.13 : 0.012;
     const pad=new THREE.Mesh(new THREE.CylinderGeometry(0.3,0.3,0.025,20),
       mat(col===TEAL?0x0a1420:0x1c1508,col,0.5,0.3,0.5));
     pad.position.set(x,y,z); scene.add(pad);
@@ -1234,6 +1266,24 @@ function attachVideoToAvatar(user, videoEl) {
   user.vidMesh.material=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide});
 }
 
+// Toggle the on-screen focus overlay for one remote user. Pass null to
+// close it. Silently does nothing if that user has no video (mic-only) —
+// there's nothing to show, not worth a dedicated empty state for this.
+function setFocus(uid) {
+  const wrap=document.getElementById('focus-overlay');
+  if (!uid || !users[uid]?.videoEl) {
+    focusedUid=null;
+    wrap.style.display='none';
+    return;
+  }
+  focusedUid=uid;
+  const vidEl=document.getElementById('focus-video');
+  vidEl.srcObject=users[uid].videoEl.srcObject;
+  vidEl.play().catch(()=>{});
+  document.getElementById('focus-label').textContent=users[uid].name||'Spieler';
+  wrap.style.display='block';
+}
+
 // ══════════ SPATIAL AUDIO ══════════
 function ensureACtx() {
   if (!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
@@ -1593,6 +1643,7 @@ async function initAgora(appId, room, myName, asDM, token) {
 
     if (!users[uid]) {
       const {grp,vidMesh}=makeAvatar(false);
+      vidMesh.userData.uid = uid; // so a crosshair raycast hit can be traced back to a specific user
       // Use buffered position if we got pos before user-published
       const px = pendingPos[uid]?.x ?? (Math.random()-.5)*1.5;
       const pz = pendingPos[uid]?.z ?? (Math.random()-.5)*1.5;
@@ -1620,6 +1671,8 @@ async function initAgora(appId, room, myName, asDM, token) {
         vel.srcObject=new MediaStream([ru.videoTrack.getMediaStreamTrack()]);
         vel.play().catch(()=>{});
         attachVideoToAvatar(users[uid],vel);
+        users[uid].videoEl=vel; // reused directly for the focus overlay, not just the 3D texture
+        if (focusedUid===uid) setFocus(uid); // picture up mid-focus if their video just (re)connected
       } catch(e){}
     }
     if (mediaType==='audio') {
@@ -1683,6 +1736,7 @@ async function initAgora(appId, room, myName, asDM, token) {
       musicUid=null;
     }
     if(document.getElementById('vol-panel').style.display==='block') renderVolPanel();
+    if(focusedUid===ru.uid) setFocus(null); // don't leave a frozen video of someone who just left
   });
 
   agoraClient.on('stream-message',(uid,data)=>{
