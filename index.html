@@ -66,6 +66,15 @@ body.locked #crosshair{opacity:1}
 .cb.str{border-color:var(--g);color:var(--g);box-shadow:0 0 10px rgba(62,207,110,.25)}
 .cb-sep{width:1px;height:26px;background:rgba(224,184,76,.12);margin:0 2px}
 
+/* VOLUME PANEL */
+#vol-panel{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);width:260px;background:rgba(2,4,12,.97);border:1px solid rgba(224,184,76,.28);z-index:200;backdrop-filter:blur(10px);max-height:280px;overflow-y:auto}
+.vol-head{padding:10px 14px;font-family:var(--fd);font-size:9px;font-weight:700;letter-spacing:3px;color:rgba(224,184,76,.85);border-bottom:1px solid rgba(224,184,76,.12);text-transform:uppercase}
+.vol-row{padding:8px 14px;border-bottom:1px solid rgba(224,184,76,.08)}
+.vol-row:last-child{border-bottom:none}
+.vol-label{font-size:10px;letter-spacing:1px;color:rgba(224,184,76,.7);margin-bottom:4px;text-transform:uppercase;display:flex;justify-content:space-between}
+.vol-row input[type=range]{width:100%;accent-color:#e0b84c}
+.vol-empty{padding:14px;font-size:10px;color:rgba(224,184,76,.4);text-align:center}
+
 /* DM PANEL */
 #gm{position:fixed;right:24px;top:70px;width:270px;background:rgba(8,14,22,.97);border:1px solid rgba(58,160,196,.28);z-index:200;backdrop-filter:blur(10px)}
 #gm::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--m),transparent)}
@@ -82,6 +91,9 @@ body.locked #crosshair{opacity:1}
 .pb.active:hover{background:rgba(209,73,91,.1);border-color:var(--r);color:var(--r)}
 .mstat{font-size:9px;letter-spacing:1px;color:rgba(58,160,196,.45);text-align:center;padding:6px 0 2px}
 .mstat.on{color:var(--g)}
+.recent-row{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px}
+.recent-thumb{width:36px;height:36px;object-fit:cover;border:1px solid rgba(58,160,196,.3);cursor:pointer;transition:border-color .15s,transform .15s}
+.recent-thumb:hover{border-color:var(--m);transform:scale(1.08)}
 .ifw{margin-top:8px}
 .ifw iframe{width:100%;border:1px solid rgba(58,160,196,.15)}
 
@@ -157,10 +169,16 @@ canvas{display:block}
   <button class="cb" id="btn-cam">📷 <span>Kamera</span></button>
   <button class="cb" id="btn-audiomode" title="Zwischen räumlichem Klang und gleicher Lautstärke für alle wechseln">🎧 <span>Räumlich</span></button>
   <button class="cb" id="btn-tactical" title="Taktische Draufsicht auf den Kampftisch">🗺 <span>Taktische Ansicht</span></button>
+  <button class="cb" id="btn-vol" title="Lautstärke einzelner Personen anpassen">🔊 <span>Lautstärke</span></button>
   <div class="cb-sep"></div>
   <button class="cb dm" id="btn-music" style="display:none">🎵 <span>Musik</span></button>
   <div class="cb-sep" id="sep-dm" style="display:none"></div>
   <button class="cb off" id="btn-leave">✕ <span>Verlassen</span></button>
+</div>
+
+<div id="vol-panel" style="display:none">
+  <div class="vol-head">🔊 Lautstärke</div>
+  <div id="vol-list"></div>
 </div>
 
 <div id="gm" style="display:none">
@@ -188,6 +206,7 @@ canvas{display:block}
   </div>
   <div class="gm-sec">
     <div class="gstt">Kampfkarte</div>
+    <div class="recent-row" id="map-recent"></div>
     <input type="file" id="map-file" accept="image/*" style="display:none"/>
     <button class="pb" id="map-upload-btn">🗺 Karte hochladen</button>
     <button class="pb" id="map-clear-btn" style="display:none">✕ Karte entfernen</button>
@@ -206,6 +225,7 @@ canvas{display:block}
       <option value="medium" selected>Mittel</option>
       <option value="large">Groß</option>
     </select>
+    <div class="recent-row" id="token-recent"></div>
     <input type="file" id="token-file" accept="image/*" style="display:none"/>
     <button class="pb" id="token-add-btn" title="F: aufnehmen/ablegen · X: entfernen (während gehalten)">➕ Token hinzufügen</button>
     <div class="mstat">F: aufnehmen/ablegen · X: entfernen</div>
@@ -1191,14 +1211,25 @@ function wireSpatial(uid, track) {
     const isoGain=audioCtx.createGain();
     isoGain.gain.value=1;
 
+    // Per-listener volume for this one speaker — independent of spatial
+    // position or mode, a plain multiplier on top of everything else.
+    // Reads any volume already set for this uid rather than defaulting to
+    // 1, since setEnabled() on a mute toggle tears down and rebuilds this
+    // whole graph (see the 'user-published' handler below) and a slider
+    // the DM just set shouldn't silently reset every time someone mutes.
+    const volGain=audioCtx.createGain();
+    volGain.gain.value = users[uid].volume ?? 1;
+    users[uid].volume = volGain.gain.value;
+
     src.connect(pan); pan.connect(panGain); panGain.connect(isoGain);
     src.connect(flatGain); flatGain.connect(isoGain);
-    isoGain.connect(audioCtx.destination);
+    isoGain.connect(volGain); volGain.connect(audioCtx.destination);
 
     users[uid].panner=pan;
     users[uid].panGain=panGain;
     users[uid].flatGain=flatGain;
     users[uid].isoGain=isoGain;
+    users[uid].volGain=volGain;
     setPannerPos(uid);
   } catch(e) {
     console.warn('Spatial audio fallback:', e);
@@ -1240,6 +1271,17 @@ function setPannerPos(uid) {
     const sameZone = isInSecretWing(p.x,p.z) === isInSecretWing(playerPos.x,playerPos.z);
     u.isoGain.gain.setTargetAtTime(sameZone ? 1 : 0, t, 0.1);
   }
+}
+
+// Per-listener volume for one specific remote user, independent of
+// spatial/flat mode and the secret-room isolation gate — a plain multiplier
+// on top of whatever those already decided. Persists across that user's
+// mute/unmute republish cycles (see the .volume read in wireSpatial).
+function setUserVolume(uid, vol) {
+  const u = users[uid];
+  if (!u) return;
+  u.volume = vol;
+  if (u.volGain && audioCtx) u.volGain.gain.setTargetAtTime(vol, audioCtx.currentTime, 0.05);
 }
 
 function updateMusicIsolation() {
@@ -1491,6 +1533,7 @@ async function initAgora(appId, room, myName, asDM, token) {
           broadcastToken({type:'tokenAdd', id, url:t.url, u:t.u, v:t.v, category:t.category, size:t.size}, true);
         });
       }
+      if (document.getElementById('vol-panel').style.display==='block') renderVolPanel();
     }
     if (mediaType==='video') {
       users[uid].videoTrack=ru.videoTrack;
@@ -1524,6 +1567,7 @@ async function initAgora(appId, room, myName, asDM, token) {
       if (users[uid].panGain) { try{users[uid].panGain.disconnect();}catch(_){} }
       if (users[uid].flatGain) { try{users[uid].flatGain.disconnect();}catch(_){} }
       if (users[uid].isoGain) { try{users[uid].isoGain.disconnect();}catch(_){} }
+      if (users[uid].volGain) { try{users[uid].volGain.disconnect();}catch(_){} }
       users[uid].audioTrack = ru.audioTrack;
       users[uid].hasAudio = true;
       wireSpatial(uid, ru.audioTrack);
@@ -1541,10 +1585,14 @@ async function initAgora(appId, room, myName, asDM, token) {
       if (users[ru.uid].panGain) { try{users[ru.uid].panGain.disconnect();}catch(_){} }
       if (users[ru.uid].flatGain) { try{users[ru.uid].flatGain.disconnect();}catch(_){} }
       if (users[ru.uid].isoGain) { try{users[ru.uid].isoGain.disconnect();}catch(_){} }
+      if (users[ru.uid].volGain) { try{users[ru.uid].volGain.disconnect();}catch(_){} }
       users[ru.uid].panner=null;
       users[ru.uid].panGain=null;
       users[ru.uid].flatGain=null;
       users[ru.uid].isoGain=null;
+      users[ru.uid].volGain=null;
+      // .volume itself is intentionally left in place — a DM's slider
+      // setting for this person should survive their mute/unmute cycle.
       users[ru.uid].hasAudio=false;
     }
   });
@@ -1557,6 +1605,7 @@ async function initAgora(appId, room, myName, asDM, token) {
       if(musicGain){ try{musicGain.disconnect();}catch(_){} musicGain=null; }
       musicUid=null;
     }
+    if(document.getElementById('vol-panel').style.display==='block') renderVolPanel();
   });
 
   agoraClient.on('stream-message',(uid,data)=>{
@@ -1760,6 +1809,7 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
       document.getElementById('gm').style.display='block';
       document.getElementById('btn-music').style.display='flex';
       document.getElementById('sep-dm').style.display='block';
+      renderRecentMaps(); renderRecentTokens();
     }
   }catch(e){
     console.error(e);
@@ -1827,8 +1877,94 @@ document.getElementById('btn-tactical').addEventListener('click',()=>{
   b.classList.toggle('str',tacticalView);
 });
 
+function renderVolPanel() {
+  const list = document.getElementById('vol-list');
+  const entries = Object.entries(users).filter(([,u])=>!u.isLocal);
+  if (!entries.length) { list.innerHTML = '<div class="vol-empty">Niemand sonst im Raum</div>'; return; }
+  list.innerHTML = '';
+  entries.forEach(([uid,u])=>{
+    const pct = Math.round((u.volume ?? 1) * 100);
+    const row = document.createElement('div');
+    row.className = 'vol-row';
+    const label = document.createElement('div');
+    label.className = 'vol-label';
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = (u.name || 'User') + ' #' + String(uid).slice(-4);
+    const pctSpan = document.createElement('span');
+    pctSpan.textContent = pct + '%';
+    label.appendChild(nameSpan); label.appendChild(pctSpan);
+    const slider = document.createElement('input');
+    slider.type='range'; slider.min='0'; slider.max='200'; slider.value=String(pct);
+    slider.addEventListener('input', ()=>{
+      setUserVolume(uid, slider.value/100);
+      pctSpan.textContent = slider.value + '%';
+    });
+    row.appendChild(label); row.appendChild(slider);
+    list.appendChild(row);
+  });
+}
+document.getElementById('btn-vol').addEventListener('click',()=>{
+  const panel=document.getElementById('vol-panel');
+  if (panel.style.display==='block') { panel.style.display='none'; }
+  else { renderVolPanel(); panel.style.display='block'; }
+});
+
 document.getElementById('btn-music').addEventListener('click',toggleStream);
 document.getElementById('share-btn').addEventListener('click',toggleStream);
+
+// Recently-used maps/tokens, so the DM isn't re-uploading the same goblin
+// token every session — Cloudinary keeps the file forever either way, this
+// just remembers the URL (and, for tokens, the category/size) locally.
+const RECENT_KEY = 'fantasyRoomRecentUploads';
+function loadRecent() {
+  try { return JSON.parse(localStorage.getItem(RECENT_KEY)) || {maps:[], tokens:[]}; }
+  catch(e) { return {maps:[], tokens:[]}; }
+}
+function saveRecent(data) {
+  try { localStorage.setItem(RECENT_KEY, JSON.stringify(data)); } catch(e) {}
+}
+function addRecentMap(url) {
+  const data=loadRecent();
+  data.maps=[{url}, ...data.maps.filter(m=>m.url!==url)].slice(0,8);
+  saveRecent(data); renderRecentMaps();
+}
+function addRecentToken(url, category, size) {
+  const data=loadRecent();
+  data.tokens=[{url,category,size}, ...data.tokens.filter(t=>t.url!==url)].slice(0,12);
+  saveRecent(data); renderRecentTokens();
+}
+function renderRecentMaps() {
+  const el=document.getElementById('map-recent');
+  if(!el) return;
+  el.innerHTML='';
+  loadRecent().maps.forEach(m=>{
+    const img=document.createElement('img');
+    img.src=m.url; img.className='recent-thumb'; img.title='Erneut verwenden';
+    img.addEventListener('click', async()=>{
+      setBattleMap(m.url);
+      await broadcastMap(m.url);
+      document.getElementById('map-stat').textContent='▶ Karte aktiv';
+      document.getElementById('map-stat').className='mstat on';
+      document.getElementById('map-clear-btn').style.display='block';
+    });
+    el.appendChild(img);
+  });
+}
+function renderRecentTokens() {
+  const el=document.getElementById('token-recent');
+  if(!el) return;
+  el.innerHTML='';
+  loadRecent().tokens.forEach(t=>{
+    const img=document.createElement('img');
+    img.src=t.url; img.className='recent-thumb'; img.title='Erneut hinzufügen';
+    img.addEventListener('click', ()=>{
+      const id=Date.now()+'-'+Math.floor(Math.random()*1e6);
+      const u=0.5+(Math.random()-0.5)*0.1, v=0.5+(Math.random()-0.5)*0.1;
+      addToken(id, t.url, u, v, t.category, t.size, true);
+    });
+    el.appendChild(img);
+  });
+}
 
 document.getElementById('map-upload-btn').addEventListener('click',()=>{
   document.getElementById('map-file').click();
@@ -1843,6 +1979,7 @@ document.getElementById('map-file').addEventListener('change', async(e)=>{
     const url=await uploadImage(file);
     setBattleMap(url);
     await broadcastMap(url);
+    addRecentMap(url);
     stat.textContent='▶ Karte aktiv'; stat.className='mstat on';
     document.getElementById('map-clear-btn').style.display='block';
   }catch(err){
@@ -1872,6 +2009,7 @@ document.getElementById('token-file').addEventListener('change', async(e)=>{
     const category=document.getElementById('token-category').value;
     const size=document.getElementById('token-size').value;
     addToken(id, url, u, v, category, size, true);
+    addRecentToken(url, category, size);
   }catch(err){
     console.warn('token upload failed:', err);
   }
