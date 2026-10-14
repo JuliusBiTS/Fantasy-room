@@ -368,6 +368,7 @@ canvas{display:block}
     <div class="gstt">Spieler-Steuerung</div>
     <button class="pb" id="mute-all-btn" title="Hotkey: M">🔇 Alle stummschalten</button>
     <div class="mstat">Hotkey: M</div>
+    <button class="pb" id="seat-all-btn" title="Teleportiert alle an einen festen Platz am Tisch, mit Blick zur Tischmitte">🪑 Alle an den Tisch setzen</button>
   </div>
   <div class="gm-sec">
     <div class="gstt">Musik an alle senden</div>
@@ -405,13 +406,14 @@ canvas{display:block}
       <option value="enemy" selected>Gegner (Rot)</option>
     </select>
     <select class="pi" id="token-size">
-      <option value="small">Klein</option>
+      <option value="small">Winzig</option>
+      <option value="klein">Klein</option>
       <option value="medium" selected>Mittel</option>
       <option value="large">Groß</option>
     </select>
     <div class="recent-row" id="token-recent"></div>
     <input type="file" id="token-file" accept="image/*" style="display:none"/>
-    <button class="pb" id="token-add-btn" title="F: aufnehmen/ablegen · X: entfernen (während gehalten)">➕ Token hinzufügen</button>
+    <button class="pb" id="token-add-btn" title="F: aufnehmen/ablegen · X: entfernen (während gehalten, oder in der Taktikansicht mit der Maus über dem Token)">➕ Token hinzufügen</button>
     <input class="pi" id="token-label" type="text" maxlength="5" placeholder="Kurzlabel, z.B. E1"/>
     <button class="pb" id="token-label-btn" title="Fügt einen einfachen Token ohne Bild ein, nur mit Kurztext">🏷 Label-Token hinzufügen</button>
     <div class="mstat">F: aufnehmen/ablegen · X: entfernen</div>
@@ -1274,8 +1276,11 @@ document.addEventListener('pointerlockchange', () => {
 // F-key pickup; dragging on empty map paints fog away, DM-only, same as
 // holding C in first-person. Both reuse the exact same per-frame follow/
 // paint loops in animate() — only the raycast's aim point changes.
+let tacticalMouseInside = false; // is the cursor currently over the 3D view (not a HUD/GM panel)?
+canvas.addEventListener('mouseleave', () => { tacticalMouseInside = false; });
 canvas.addEventListener('mousemove', e => {
   if (!tacticalView) return;
+  tacticalMouseInside = true;
   const rect = canvas.getBoundingClientRect();
   tacticalMouseNDC = {
     x: ((e.clientX-rect.left)/rect.width)*2-1,
@@ -1372,10 +1377,19 @@ document.addEventListener('keydown', e => {
       }
     }
   }
-  if (e.code === 'KeyX' && isLocked && isDM) {
+  // In tactical view pointer lock is off (isLocked is false), so X also has
+  // to work there: delete whatever the mouse cursor is hovering over, no
+  // need to pick it up first. Ignored while typing in a field (e.g. the
+  // token label box) or when the cursor isn't over the 3D view at all.
+  const typingInField = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName || '');
+  if (e.code === 'KeyX' && isDM && !typingInField && (isLocked || tacticalView)) {
     if (heldTokenId) {
       removeToken(heldTokenId, true);
       heldTokenId = null;
+    } else if (tacticalView && tacticalMouseInside && tacticalMouseNDC && battleMapMesh) {
+      tokenRaycaster.setFromCamera(tacticalMouseNDC, camera);
+      const hit = tokenRaycaster.intersectObjects(Object.values(tokens).map(t=>t.disc))[0];
+      if (hit) removeToken(hit.object.userData.tokenId, true);
     }
   }
   // DM mute-all hotkey — just clicks the real button so there's only ever
@@ -3166,6 +3180,7 @@ function setBattleMap(url) {
     battleMapMesh.material.needsUpdate = true;
     battleMapMesh.scale.set(1,1,1);
     if (fogMesh) fogMesh.visible = false;
+    repositionTokens();
     return;
   }
   // Reset fog to fully covered synchronously, before the new image has even
@@ -3186,7 +3201,16 @@ function setBattleMap(url) {
     battleMapMesh.material.map = tex;
     battleMapMesh.material.needsUpdate = true;
     battleMapMesh.scale.set(sx, sy, 1);
+    // Tokens restored/received BEFORE this async load finished were placed
+    // against the old (unscaled) map transform — re-place them from their
+    // stored u,v so they land where they actually belong on the new map.
+    repositionTokens();
   });
+}
+
+function repositionTokens() {
+  if (!battleMapMesh) return;
+  Object.values(tokens).forEach(t => t.grp.position.copy(mapUVToWorld(t.u, t.v)));
 }
 
 // ══════════ ROOM STATE PERSISTENCE (DM-only, per room code) ══════════
@@ -3276,6 +3300,10 @@ async function broadcastMap(url) {
 function mapUVToWorld(u, v) {
   const baseW = TABLE_TL*0.72, baseH = TABLE_TW*0.7;
   const local = new THREE.Vector3((u-0.5)*baseW, (v-0.5)*baseH, 0.004);
+  // matrixWorld is only refreshed during a render — right after a scale
+  // change, or before the very first frame (restoring a saved room), it would
+  // otherwise be stale and place the token against the old transform.
+  battleMapMesh.updateWorldMatrix(true, false);
   return battleMapMesh.localToWorld(local);
 }
 
@@ -3318,7 +3346,9 @@ const TOKEN_COLORS = {player:TEAL, ally:EMERALD, enemy:EMBER, companion:ORANGE};
 // that the 3x ratio between them stopped reading as a size difference at
 // normal viewing distance — widened back out so each tier is unmistakable,
 // while staying well below the original pre-shrink sizes (0.7/1.0/1.5).
-const TOKEN_SCALES = {small:0.2, medium:0.6, large:1.1};
+// 'small' is labelled "Winzig" in the UI (key kept so tokens saved/synced
+// before the rename keep their size); 'klein' is the newer tier in between.
+const TOKEN_SCALES = {small:0.2, klein:0.4, medium:0.6, large:1.1};
 
 function addToken(id, url, u, v, category, size, broadcast, label) {
   if (tokens[id]) return; // already exists locally (e.g. echo of our own broadcast never happens, but late-join resync could repeat)
@@ -4673,7 +4703,7 @@ async function initAgora(appId, room, myName, asDM, token) {
       if (isDM) {
         if (currentMapUrl) broadcastMap(currentMapUrl);
         Object.entries(tokens).forEach(([id,t])=>{
-          broadcastToken({type:'tokenAdd', id, url:t.url, u:t.u, v:t.v, category:t.category, size:t.size}, true);
+          broadcastToken({type:'tokenAdd', id, url:t.url, u:t.u, v:t.v, category:t.category, size:t.size, label:t.label}, true);
         });
         // Same gap for fog: the 'map' re-announce above already resets the
         // newcomer's fog to fully covered (setBattleMap does that locally
@@ -4818,6 +4848,10 @@ async function initAgora(appId, room, myName, asDM, token) {
       if(msg.type==='whisper'){
         if(msg.active) applyWhisperState(uid, msg.to);
         else clearWhisperState(uid);
+      }
+      if(msg.type==='seatAll' && !isDM && (users[uid]?.isDM || pendingName[uid]?.isDM)){
+        const idx = msg.seats?.[String(localUID)];
+        if (typeof idx === 'number') takeSeat(idx);
       }
       if(msg.type==='forceMute'){
         // Only players act on this — the DM never receives their own broadcast.
@@ -5089,6 +5123,37 @@ document.getElementById('mute-all-btn').addEventListener('click',async()=>{
   // button is used, for everyone.
   triggerSaltRain();
   broadcastToken({type:'saltRain'}, false);
+});
+
+// ══════════ FIXED SEATING ══════════
+// "Alle an den Tisch setzen" — the DM teleports everyone to a fixed spot on
+// the ring of seat pads around the round table (the same spots buildTable()
+// draws), facing the table centre, so everybody sits at an even distance and
+// sees everyone else well. The DM assigns the seats and broadcasts one
+// {uid: seatIndex} map (rather than every client guessing from its own user
+// list, which can differ for a moment), each client only acts on its own
+// entry. -1 = the DM's seat. Seats beyond the three player pads fill the
+// diagonals between the pads.
+const SEAT_RING_R = TABLE_R + 0.5; // same radius buildTable() puts the pads at
+const SEAT_DIAG = Math.SQRT1_2;
+const PLAYER_SEAT_DIRS = [[0,-1],[1,0],[0,1],[-SEAT_DIAG,-SEAT_DIAG],[SEAT_DIAG,-SEAT_DIAG],[SEAT_DIAG,SEAT_DIAG],[-SEAT_DIAG,SEAT_DIAG]];
+function takeSeat(idx) {
+  const dir = idx < 0 ? [-1,0] : PLAYER_SEAT_DIRS[Math.min(idx, PLAYER_SEAT_DIRS.length-1)];
+  const x = dir[0]*SEAT_RING_R, z = dir[1]*SEAT_RING_R;
+  playerPos.set(x, EYE_H, z);
+  velY = 0;
+  yaw = Math.atan2(x, z); // forward = (-sin yaw, -cos yaw) → straight at the table centre
+  pitch = -0.25;          // a slight downward look at the table
+}
+document.getElementById('seat-all-btn').addEventListener('click', ()=>{
+  if (!agoraClient || !isDM) return;
+  const seats = {};
+  Object.keys(users)
+    .filter(k => !users[k].isLocal && !users[k].isDM && Number(k) < MUSIC_UID_OFFSET)
+    .sort((a,b) => a-b)
+    .forEach((k,i) => { seats[k] = i; });
+  broadcastToken({type:'seatAll', seats}, true);
+  takeSeat(-1);
 });
 
 document.querySelectorAll('.amb-btn').forEach(b=>{
