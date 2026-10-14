@@ -3680,8 +3680,8 @@ function attachVideoToAvatar(user, videoEl) {
 // -> setEnabled(true) cycle (Agora restarts the capture device rather than
 // just toggling a black-frame flag), since the preview element was pointed
 // at a snapshot MediaStream that never learns about the new track on its
-// own. Shared by the manual camera button and the auto-pause-on-minimize
-// feature below — same fix, two triggers.
+// own. Used by the manual camera button (the visibility auto-pause below
+// no longer touches the local camera at all).
 function refreshLocalVideoPreview() {
   if (!localVideo || !users[localUID]?.videoEl) return;
   const vel = users[localUID].videoEl;
@@ -3722,25 +3722,20 @@ function detachRemoteVideo(uid) {
 }
 
 // ══════════ VISIBILITY-DRIVEN VIDEO PAUSE ══════════
-// Minimizing the window (or just switching to another tab) means nothing
-// video-related is actually visible — the 3D scene already stops rendering
-// on its own once requestAnimationFrame gets suspended, but decoding
-// everyone else's camera feed (and encoding your own) keeps running
-// regardless, and is typically the single heaviest ongoing cost in a live
-// call. Pausing it here is purely a local subscription choice — it never
-// touches microphone capture, the noise gate, remote audio playback, or
-// music, all of which keep working exactly as before.
+// Minimizing the window (or just switching to another tab/app, e.g. the DM
+// checking a Word document) means nothing video-related is actually visible
+// — the 3D scene already stops rendering on its own once
+// requestAnimationFrame gets suspended, but decoding everyone else's camera
+// feed keeps running regardless and is a heavy ongoing cost. Pausing it here
+// is purely a local subscription choice — it never touches microphone
+// capture, the noise gate, remote audio playback, or music, and deliberately
+// NEVER touches your OWN camera: you stay visible to everyone else while
+// tabbed out (the DM mostly works in other windows during a session).
 let videoAutoPaused = false;      // are we currently in an auto-paused-for-visibility state?
-let camWasOffBeforeAutoPause = false; // preserves a deliberately-off camera across the pause/resume cycle, same idea as forceMute's preForceMuteState
 
 async function pauseVideoForVisibility() {
   if (videoAutoPaused || !agoraClient) return;
   videoAutoPaused = true;
-
-  camWasOffBeforeAutoPause = camOff;
-  if (localVideo && !camOff) {
-    try { await localVideo.setEnabled(false); } catch(e) {}
-  }
 
   for (const ru of agoraClient.remoteUsers) {
     if (ru.uid >= MUSIC_UID_OFFSET || !ru.videoTrack) continue; // music never has video; skip anyone we're not even subscribed to
@@ -3752,11 +3747,6 @@ async function pauseVideoForVisibility() {
 async function resumeVideoForVisibility() {
   if (!videoAutoPaused || !agoraClient) return;
   videoAutoPaused = false;
-
-  if (localVideo && !camWasOffBeforeAutoPause) {
-    try { await localVideo.setEnabled(true); } catch(e) {}
-    refreshLocalVideoPreview();
-  }
 
   // Checked against ru.hasVideo (their actual current publish state), not
   // "whoever we paused" — covers both people who were already publishing
