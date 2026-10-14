@@ -1381,7 +1381,12 @@ document.addEventListener('keydown', e => {
   // to work there: delete whatever the mouse cursor is hovering over, no
   // need to pick it up first. Ignored while typing in a field (e.g. the
   // token label box) or when the cursor isn't over the 3D view at all.
-  const typingInField = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName || '');
+  // Only real text entry blocks it — a <select>/button/checkbox/slider keeps
+  // keyboard focus after the DM uses it (e.g. picking a token size), and
+  // must not make X dead in tactical view.
+  const tgt = e.target;
+  const typingInField = !!tgt && (tgt.tagName==='TEXTAREA' || tgt.isContentEditable ||
+    (tgt.tagName==='INPUT' && /^(text|search|url|email|tel|password|number)$/i.test(tgt.type || 'text')));
   if (e.code === 'KeyX' && isDM && !typingInField && (isLocked || tacticalView)) {
     if (heldTokenId) {
       removeToken(heldTokenId, true);
