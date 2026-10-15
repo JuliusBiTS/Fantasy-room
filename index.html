@@ -3800,10 +3800,72 @@ async function resumeVideoForVisibility() {
   }
 }
 
+// Pause and resume must never run at the same time: with a quick tab-out and
+// back, resume used to subscribe someone while the pause loop was still
+// working through its list, which then unsubscribed them again — leaving that
+// person's video black with nothing left to bring it back. Chaining them on
+// one queue (each step re-reads document.hidden when it actually runs) makes
+// the final state always match whether the page is visible right now.
+let visQueue = Promise.resolve();
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) pauseVideoForVisibility();
-  else resumeVideoForVisibility();
+  visQueue = visQueue
+    .then(() => document.hidden ? pauseVideoForVisibility() : resumeVideoForVisibility())
+    .catch(()=>{});
 });
+
+// Self-heal for remote cameras: anyone who is publishing video while the
+// page is visible and un-paused but I have no live video for (a subscribe
+// that failed silently, a lost event) gets re-subscribed. Runs from the
+// periodic health check below; no-op when everything is fine.
+const remoteVideoBusy = new Set();
+async function ensureRemoteVideos() {
+  if (!agoraClient || document.hidden || videoAutoPaused) return;
+  for (const ru of agoraClient.remoteUsers) {
+    if (ru.uid >= MUSIC_UID_OFFSET || !ru.hasVideo || !users[ru.uid]) continue;
+    const missingTrack = !ru.videoTrack;
+    const detached = ru.videoTrack && users[ru.uid].videoTrack !== ru.videoTrack;
+    if (!missingTrack && !detached) continue;
+    if (remoteVideoBusy.has(ru.uid)) continue;
+    remoteVideoBusy.add(ru.uid);
+    try {
+      if (missingTrack) await agoraClient.subscribe(ru, 'video');
+      attachRemoteVideo(ru.uid, ru);
+    } catch(e) { console.warn('Video-Wiederherstellung fehlgeschlagen für', ru.uid, e); }
+    remoteVideoBusy.delete(ru.uid);
+  }
+}
+
+// Self-heal for MY camera: the manual fix people found (switch the camera
+// off and on) restarts the capture + encoder. Do that automatically when the
+// capture track has ended/stalled, or when the encoder demonstrably stopped
+// sending frames after having sent some — rate-limited, and skipped while
+// the camera is deliberately off or being toggled by hand.
+let camRecovering = false, camBusy = false, lastCamRecoverAt = 0, camBadChecks = 0, camSentFramesBefore = false;
+async function recoverCamera() {
+  if (camRecovering || !localVideo || camOff) return;
+  camRecovering = true; lastCamRecoverAt = performance.now();
+  try {
+    await localVideo.setEnabled(false);
+    await localVideo.setEnabled(true);
+    refreshLocalVideoPreview();
+  } catch(e) { console.warn('Kamera-Wiederherstellung fehlgeschlagen:', e); }
+  camSentFramesBefore = false; camBadChecks = 0;
+  camRecovering = false;
+}
+function checkLocalCamera() {
+  if (!localVideo || camOff || camBusy || camRecovering || !agoraClient) return;
+  const t = localVideo.getMediaStreamTrack();
+  let bad = !t || t.readyState === 'ended' || (t.muted && !document.hidden);
+  try {
+    const s = agoraClient.getLocalVideoStats();
+    if (s && typeof s.sendFrameRate === 'number') {
+      if (s.sendFrameRate > 0) camSentFramesBefore = true;
+      else if (camSentFramesBefore && (agoraClient.localTracks||[]).includes(localVideo)) bad = true;
+    }
+  } catch(e) {}
+  camBadChecks = bad ? camBadChecks+1 : 0;
+  if (camBadChecks >= 3 && performance.now()-lastCamRecoverAt > 15000) recoverCamera();
+}
 
 // Toggle the on-screen focus overlay for one remote user. Pass null to
 // close it. Silently does nothing if that user has no video (mic-only) —
@@ -4809,6 +4871,8 @@ function setupNetworkResilience(appId, room, token, myName, asDM) {
     if (now - lastPublishCheckAt < 4000) return;
     lastPublishCheckAt = now;
     ensureLocalTracksPublished();
+    checkLocalCamera();
+    ensureRemoteVideos();
   }, 1000);
 }
 
@@ -5373,7 +5437,10 @@ document.querySelectorAll('.amb-btn').forEach(b=>{
 
 document.getElementById('btn-cam').addEventListener('click',async()=>{
   if(!localVideo)return;
-  camOff=!camOff; await localVideo.setEnabled(!camOff);
+  camBusy=true; // keep the self-heal from fighting a manual toggle
+  camOff=!camOff;
+  try { await localVideo.setEnabled(!camOff); } catch(e) { console.warn('Kamera umschalten fehlgeschlagen:', e); }
+  camBusy=false; camBadChecks=0; camSentFramesBefore=false;
   const b=document.getElementById('btn-cam');
   b.querySelector('span').textContent=camOff?'Cam aus':'Kamera';
   b.classList.toggle('off',camOff);
