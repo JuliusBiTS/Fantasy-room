@@ -177,6 +177,8 @@ body.locked #crosshair{opacity:1}
 #prox.show{opacity:1}
 
 /* PROMPT KEY LABEL (book/tactical hints) */
+#net-banner{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:600;padding:8px 18px;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#f3d9a0;background:rgba(40,16,16,.92);border:1px solid rgba(209,73,91,.7);box-shadow:0 0 18px rgba(209,73,91,.35);pointer-events:none;opacity:0;transition:opacity .3s;white-space:nowrap}
+#net-banner.show{opacity:1}
 .bp-key{display:inline-block;min-width:16px;padding:2px 6px;border:1px solid rgba(224,184,76,.5);background:rgba(2,4,12,.75);text-align:center;font-family:var(--fd);font-weight:700}
 
 
@@ -422,6 +424,7 @@ canvas{display:block}
 
 <div id="prox"></div>
 <div id="book-prompt"></div>
+<div id="net-banner"></div>
 
 <div id="focus-overlay" style="display:none">
   <video id="focus-video" autoplay muted playsinline></video>
@@ -3929,9 +3932,20 @@ function renderGallery() {
 
 // ══════════ SPATIAL AUDIO ══════════
 function ensureACtx() {
-  if (!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  if (!audioCtx) {
+    audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+    // If the browser suspends/interrupts the context later on, bring it
+    // straight back — a suspended context silences everything we send.
+    audioCtx.addEventListener('statechange', () => {
+      if (audioCtx.state==='suspended' || audioCtx.state==='interrupted') audioCtx.resume().catch(()=>{});
+    });
+  }
   if (audioCtx.state==='suspended') audioCtx.resume();
 }
+// Any click/keypress is a user gesture that lets a blocked resume() succeed.
+['pointerdown','keydown'].forEach(ev => document.addEventListener(ev, () => {
+  if (audioCtx && audioCtx.state!=='running' && audioCtx.state!=='closed') audioCtx.resume().catch(()=>{});
+}, true));
 
 // ══════════ MIC NOISE GATE ══════════
 // Two people sitting in the same physical room on separate devices means
@@ -3971,19 +3985,79 @@ const GATE_HOLD_MS=200;    // stays open this long past the last loud moment, so
 // still captures (that processing runs first; the gate is purely
 // downstream of it, same idea as the tab-audio custom track already used
 // for music, just chained through a gain stage instead of published raw).
+let gateSrcNode=null, gateSrcTrack=null; // the mic source currently feeding the gate, and the MediaStreamTrack it was made from
+
+// (Re)points the gate's input at a mic track. Split out so the health check
+// below can re-wire it if Agora ever hands us a different MediaStreamTrack
+// (it re-captures the device — new track object — after setEnabled(), a
+// device change, etc.); a source node stays glued to the track it was
+// created from, so without this the gate would keep listening to a dead one.
+function connectGateSource(track) {
+  if (gateSrcNode) { try{ gateSrcNode.disconnect(); }catch(e){} }
+  gateSrcNode = audioCtx.createMediaStreamSource(new MediaStream([track]));
+  gateSrcTrack = track;
+  gateSrcNode.connect(gateAnalyser);
+  gateSrcNode.connect(gateGain);
+}
+
 function buildGatedMicTrack(rawMicTrack) {
   ensureACtx();
-  const src = audioCtx.createMediaStreamSource(new MediaStream([rawMicTrack]));
   gateAnalyser = audioCtx.createAnalyser();
   gateAnalyser.fftSize = 512;
   gateGain = audioCtx.createGain();
   gateGain.gain.value = noiseGateEnabled ? 0 : 1; // starts closed if the gate's on — updateNoiseGate() opens it the instant it sees real level
   const dest = audioCtx.createMediaStreamDestination();
-  src.connect(gateAnalyser);
-  src.connect(gateGain);
   gateGain.connect(dest);
+  connectGateSource(rawMicTrack);
   return dest.stream.getAudioTracks()[0];
 }
+
+// Mute/unmute. When the gate is publishing the voice, the gate IS the mute
+// (updateNoiseGate() zeroes it while micMuted||forceMuted) and the raw mic
+// track is deliberately left alone: calling localAudio.setEnabled() makes
+// Agora stop and re-open the capture device, which hands back a NEW track
+// the gate wasn't connected to — heard as "unmuted, but nobody hears me
+// until I rejoin". Only the no-gate fallback still needs setEnabled().
+function applyMicMute() {
+  if (gatedMicTrack) { updateNoiseGate(); return; }
+  if (localAudio) localAudio.setEnabled(!(micMuted || forceMuted)).catch(()=>{});
+}
+
+// Replaces a dead (ended) microphone — unplugged/Bluetooth dropout, device
+// sleep — with a fresh one and re-wires the gate to it. Throttled so a
+// permanently missing device doesn't hammer getUserMedia.
+let micRecovering=false, lastMicRecoverAt=0;
+async function recoverMicTrack() {
+  if (micRecovering || performance.now()-lastMicRecoverAt < 5000) return;
+  micRecovering = true; lastMicRecoverAt = performance.now();
+  try {
+    const fresh = await AgoraRTC.createMicrophoneAudioTrack({AEC:true,ANS:true,AGC:true});
+    const old = localAudio;
+    localAudio = fresh;
+    connectGateSource(fresh.getMediaStreamTrack());
+    try{ old && old.close(); }catch(e){}
+  } catch(e) { console.warn('Mikrofon-Wiederherstellung fehlgeschlagen:', e); }
+  micRecovering = false;
+}
+
+// Once a second: keep the voice path alive without anyone having to rejoin.
+// (1) a suspended AudioContext (device change, background, autoplay rules)
+// silences the gate's output entirely; (2) Agora may have swapped the mic
+// track; (3) the track may have ended outright.
+let lastForceMuteMsgAt = 0;
+const FORCE_MUTE_STALE_MS = 45000; // the DM re-sends the state every few seconds; silence for this long = DM gone
+setInterval(() => {
+  if (audioCtx && audioCtx.state !== 'running' && audioCtx.state !== 'closed') audioCtx.resume().catch(()=>{});
+  if (gateGain && localAudio) {
+    const cur = localAudio.getMediaStreamTrack();
+    if (cur && cur !== gateSrcTrack) connectGateSource(cur);
+    else if (cur && cur.readyState === 'ended') recoverMicTrack();
+  }
+  // A force-mute can never outlive its DM: if the DM's periodic refresh
+  // stops arriving (they left, or a message was lost), hand the mic back
+  // instead of leaving the player locked out until they reload.
+  if (forceMuted && performance.now()-lastForceMuteMsgAt > FORCE_MUTE_STALE_MS) releaseForceMute();
+}, 1000);
 
 // Reads the current mic level and opens/closes the gate — called every
 // frame from animate(), same idiom as the flicker-light/particle loops.
@@ -4623,9 +4697,126 @@ const pendingPos = {};
 // itself on each new join.
 const pendingName = {};
 
+// The DM's client is the source of truth for shared table state. Agora's data
+// channel never replays history, so this is re-sent whenever someone could
+// have missed it: a newcomer joins, someone reconnects, or a client asks
+// ('needSync') after its own connection dropped. Rate-limited so several
+// triggers at once (a whole group reconnecting) collapse into one resend.
+let lastDmResyncAt = 0;
+function dmResyncRoom() {
+  if (!isDM || !agoraClient) return;
+  const now = performance.now();
+  if (now - lastDmResyncAt < 1500) return;
+  lastDmResyncAt = now;
+  if (currentMapUrl) broadcastMap(currentMapUrl);
+  Object.entries(tokens).forEach(([id,t])=>{
+    broadcastToken({type:'tokenAdd', id, url:t.url, u:t.u, v:t.v, category:t.category, size:t.size, label:t.label}, true);
+  });
+  // Same gap for fog: the 'map' re-announce above already resets the
+  // newcomer's fog to fully covered (setBattleMap does that locally
+  // on receipt) — replay whatever's been revealed since on top of it.
+  if (currentMapUrl) {
+    if (fogFullyRevealed) broadcastToken({type:'fogRevealAll'}, true);
+    else fogReveals.forEach(d=>broadcastToken({type:'fogReveal', u:d.u, v:d.v, r:d.r}, true));
+  }
+  if (currentAmbianceName && currentAmbianceName !== 'calm') broadcastToken({type:'ambiance', name:currentAmbianceName}, true);
+  if (forceMuteHeartbeat) sendForceMute();
+}
+
+// ══════════ NETWORK RESILIENCE ══════════
+// Agora reconnects by itself through short drops, but the app also has to
+// cope with: a long outage (the SDK gives up → DISCONNECTED and nothing
+// rejoins), tracks that didn't come back after a rejoin, and state messages
+// that were sent while this client was offline. Everything here is a no-op
+// on a healthy connection.
+let netLeaving = false, netRejoining = false, netLost = false, lastPublishCheckAt = 0, publishing = false;
+let localPublishReady = false; // set once the very first publish after joining has finished — until then the join flow owns publishing, not this safety net
+let netBannerEl = null;
+function showNetBanner(text) {
+  if (!netBannerEl) netBannerEl = document.getElementById('net-banner');
+  if (!netBannerEl) return;
+  if (text) { netBannerEl.textContent = text; netBannerEl.classList.add('show'); }
+  else netBannerEl.classList.remove('show');
+}
+
+// Re-publishes whichever of my own tracks the client no longer lists as
+// published (after a manual rejoin they all need it; after Agora's own
+// reconnect normally none do). Never double-publishes.
+async function ensureLocalTracksPublished() {
+  if (!localPublishReady || !agoraClient || publishing || agoraClient.connectionState !== 'CONNECTED') return;
+  const want = [gatedMicTrack || localAudio, localVideo].filter(Boolean);
+  const have = agoraClient.localTracks || [];
+  const missing = want.filter(t => !have.includes(t));
+  if (!missing.length) return;
+  publishing = true;
+  try { await agoraClient.publish(missing); }
+  catch(e) { console.warn('Erneutes Veröffentlichen fehlgeschlagen:', e); }
+  publishing = false;
+}
+
+function sleepMs(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function rejoinLoop(client, appId, room, token) {
+  if (netRejoining || netLeaving) return;
+  netRejoining = true;
+  let delay = 2000;
+  while (!netLeaving && client === agoraClient && client.connectionState === 'DISCONNECTED') {
+    try { await client.join(appId, room, token, localUID); break; }
+    catch(e) {
+      console.warn('Wiederverbinden fehlgeschlagen, neuer Versuch:', e);
+      await sleepMs(delay); delay = Math.min(delay*1.5, 15000);
+    }
+  }
+  netRejoining = false;
+}
+
+// After the connection is back: make sure my tracks are live and everyone
+// (and I) get back in step, since reliable messages sent while this client
+// was offline are simply gone.
+function afterReconnect(myName, asDM) {
+  ensureACtx();
+  ensureLocalTracksPublished();
+  sendName(myName, asDM);
+  if (whisperTarget) broadcastWhisper(true, whisperTarget);
+  if (isDM) dmResyncRoom();
+  else broadcastToken({type:'needSync'}, true); // ask the DM to resend map/tokens/fog/mood/mute state
+}
+
+function setupNetworkResilience(appId, room, token, myName, asDM) {
+  const client = agoraClient; // events from an abandoned/older client (failed join, retry) must not drive the new one
+  const live = () => !netLeaving && localPublishReady && client === agoraClient;
+  client.on('connection-state-change', (cur, prev) => {
+    if (!live()) return;
+    if (cur === 'RECONNECTING') { netLost = true; showNetBanner('⚠ Verbindung instabil — verbinde neu …'); }
+    else if (cur === 'DISCONNECTED') { netLost = true; showNetBanner('⚠ Verbindung verloren — versuche erneut …'); rejoinLoop(client, appId, room, token); }
+    else if (cur === 'CONNECTED') {
+      showNetBanner(null);
+      if (netLost) { netLost = false; afterReconnect(myName, asDM); }
+    }
+  });
+  window.addEventListener('offline', () => { if (live()) showNetBanner('⚠ Kein Internet — warte auf Verbindung …'); });
+  window.addEventListener('online', () => {
+    if (!live()) return;
+    if (client.connectionState === 'DISCONNECTED') rejoinLoop(client, appId, room, token);
+    else if (client.connectionState === 'CONNECTED') showNetBanner(null);
+  });
+  // Safety net on the 1s health timer: if I'm connected but one of my tracks
+  // isn't actually published (a failed republish, a dropped track), fix it.
+  const safety = setInterval(() => {
+    if (client !== agoraClient || netLeaving) { clearInterval(safety); return; }
+    if (!localPublishReady || client.connectionState !== 'CONNECTED') return;
+    const now = performance.now();
+    if (now - lastPublishCheckAt < 4000) return;
+    lastPublishCheckAt = now;
+    ensureLocalTracksPublished();
+  }, 1000);
+}
+
 async function initAgora(appId, room, myName, asDM, token) {
   joinedAppId=appId; joinedRoom=room; joinedToken=token||null; // needed later if the DM starts sharing music
   agoraClient=AgoraRTC.createClient({mode:'rtc',codec:'vp8'});
+  localPublishReady=false; netLeaving=false; netLost=false;
+  setupNetworkResilience(appId, room, joinedToken, myName, asDM);
 
   // Drives the speaking-highlight border in the gallery/PiP tiles — updates
   // the DOM directly rather than re-rendering, since this fires a few
@@ -4705,19 +4896,7 @@ async function initAgora(appId, room, myName, asDM, token) {
       // despite the whisper, which is exactly the "someone else heard it
       // too" bug this re-announce closes.
       if (whisperTarget) broadcastWhisper(true, whisperTarget);
-      if (isDM) {
-        if (currentMapUrl) broadcastMap(currentMapUrl);
-        Object.entries(tokens).forEach(([id,t])=>{
-          broadcastToken({type:'tokenAdd', id, url:t.url, u:t.u, v:t.v, category:t.category, size:t.size, label:t.label}, true);
-        });
-        // Same gap for fog: the 'map' re-announce above already resets the
-        // newcomer's fog to fully covered (setBattleMap does that locally
-        // on receipt) — replay whatever's been revealed since on top of it.
-        if (currentMapUrl) {
-          if (fogFullyRevealed) broadcastToken({type:'fogRevealAll'}, true);
-          else fogReveals.forEach(d=>broadcastToken({type:'fogReveal', u:d.u, v:d.v, r:d.r}, true));
-        }
-      }
+      if (isDM) dmResyncRoom();
       if (document.getElementById('vol-panel').style.display==='block') renderVolPanel();
       renderPip();
     }
@@ -4854,23 +5033,26 @@ async function initAgora(appId, room, myName, asDM, token) {
         if(msg.active) applyWhisperState(uid, msg.to);
         else clearWhisperState(uid);
       }
+      if(msg.type==='needSync' && isDM){ dmResyncRoom(); }
       if(msg.type==='seatAll' && !isDM && (users[uid]?.isDM || pendingName[uid]?.isDM)){
         const idx = msg.seats?.[String(localUID)];
         if (typeof idx === 'number') takeSeat(idx);
       }
       if(msg.type==='forceMute'){
         // Only players act on this — the DM never receives their own broadcast.
-        if(msg.value && !forceMuted){
-          preForceMuteState = micMuted;
-          forceMuted = true;
-          micMuted = true;
-          if(localAudio) localAudio.setEnabled(false);
-          setMicUI();
-        } else if(!msg.value && forceMuted){
-          forceMuted = false;
-          micMuted = preForceMuteState;
-          if(localAudio) localAudio.setEnabled(!micMuted);
-          setMicUI();
+        // The DM re-sends this every few seconds (see mute-all-btn), so it is
+        // idempotent here and a lost message can't leave anyone stuck.
+        if(users[uid]?.isDM || pendingName[uid]?.isDM || uid===undefined){
+          lastForceMuteMsgAt = performance.now();
+          if(msg.value && !forceMuted){
+            preForceMuteState = micMuted;
+            forceMuted = true;
+            micMuted = true;
+            applyMicMute();
+            setMicUI();
+          } else if(!msg.value && forceMuted){
+            releaseForceMute();
+          }
         }
       }
     }catch(e){ console.warn('stream-message parse failed:', e, 'from uid', uid); }
@@ -4910,6 +5092,7 @@ async function initAgora(appId, room, myName, asDM, token) {
   }
   const audioToPublish = gatedMicTrack || localAudio;
   await agoraClient.publish(localVideo ? [audioToPublish,localVideo] : [audioToPublish]);
+  localPublishReady = true;
 
   // local avatar
   const {grp,vidMesh,whisperIcon}=makeAvatar(asDM);
@@ -5086,6 +5269,7 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
     console.error(e);
     // The channel join itself can succeed before media acquisition fails —
     // leave it so a retry doesn't pile up an orphaned, trackless connection.
+    netLeaving = true; localPublishReady = false;
     try{ if(agoraClient) await agoraClient.leave(); }catch(_){}
     document.getElementById('join-overlay').style.display='flex';
     btn.disabled=false; btn.textContent='▶ VERBINDEN';
@@ -5106,21 +5290,43 @@ function setMicUI(){
   }
 }
 
-document.getElementById('btn-mic').addEventListener('click',async()=>{
+// Hands the mic back after a DM force-mute (explicit unmute-all, or the DM's
+// refresh stopped arriving) and restores whatever state the player had before.
+function releaseForceMute(){
+  if(!forceMuted) return;
+  forceMuted = false;
+  micMuted = preForceMuteState;
+  applyMicMute();
+  setMicUI();
+}
+
+document.getElementById('btn-mic').addEventListener('click',()=>{
   if(!localAudio)return;
   if(forceMuted)return; // locked by the DM — cannot self-unmute
   ensureACtx();
-  micMuted=!micMuted; await localAudio.setEnabled(!micMuted);
+  micMuted=!micMuted;
+  applyMicMute();
   setMicUI();
 });
 
+// The DM keeps re-sending the current mute-all state (started on first use),
+// so a player whose single message got lost, or who joins mid-mute, still
+// ends up in the right state — and one who never gets an "unmute" can't be
+// stuck (they also auto-release when these stop arriving, see the 1s timer).
+let forceMuteHeartbeat = null;
+function sendForceMute(){
+  if(!agoraClient) return Promise.resolve();
+  try {
+    return Promise.resolve(agoraClient.sendStreamMessage(
+      new TextEncoder().encode(JSON.stringify({type:'forceMute',value:allMuted})), true))
+      .catch(e=>console.warn('forceMute broadcast failed:', e));
+  } catch(e) { console.warn('forceMute broadcast failed:', e); return Promise.resolve(); }
+}
 document.getElementById('mute-all-btn').addEventListener('click',async()=>{
   if(!agoraClient)return;
   allMuted=!allMuted;
-  try{
-    await agoraClient.sendStreamMessage(
-      new TextEncoder().encode(JSON.stringify({type:'forceMute',value:allMuted})), true);
-  }catch(e){ console.warn('forceMute broadcast failed:', e); }
+  await sendForceMute();
+  if(!forceMuteHeartbeat) forceMuteHeartbeat = setInterval(sendForceMute, 5000);
   const b=document.getElementById('mute-all-btn');
   b.textContent = allMuted ? '🔊 Stummschaltung aufheben' : '🔇 Alle stummschalten';
   b.classList.toggle('active',allMuted);
@@ -5580,6 +5786,7 @@ document.getElementById('token-label-btn').addEventListener('click',()=>{
 });
 
 document.getElementById('btn-leave').addEventListener('click',async()=>{
+  netLeaving = true; // the leave below fires DISCONNECTED — must not trigger an auto-rejoin
   try{
     if(gatedMicTrack){gatedMicTrack.stop();gatedMicTrack.close();}
     if(localAudio){localAudio.stop();localAudio.close();}
