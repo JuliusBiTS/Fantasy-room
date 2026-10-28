@@ -5298,6 +5298,24 @@ function saveJoinPrefs(p){ try{ localStorage.setItem(JOIN_PREFS_KEY, JSON.string
 // line breaks (and tokens, which are long, even more often).
 const cleanId = s => (s||'').replace(/\s+/g,'');
 const APP_ID_RE = /^[0-9a-f]{32}$/i;
+// Agora temp tokens look like '007eJxT…' (long, base64-ish) — easy to paste into
+// the App-ID field by mistake. If the two fields are swapped/misplaced, fix it
+// and say so, instead of just rejecting a perfectly valid credential.
+const TOKEN_RE = /^00\d[A-Za-z0-9+\/=_-]{40,}$/;
+function fixSwappedCredentials() {
+  const aEl = document.getElementById('f-appid'), tEl = document.getElementById('f-token');
+  const a = cleanId(aEl.value), t = cleanId(tEl.value);
+  if (TOKEN_RE.test(a) && !APP_ID_RE.test(a)) {
+    if (!t) tEl.value = a;
+    aEl.value = ''; aEl.focus();
+    return 'Das war ein Token, keine App-ID — ich habe es ins Token-Feld verschoben. Bitte jetzt noch die App-ID eintragen (32 Zeichen, Agora-Konsole → Projekt → App ID).';
+  }
+  if (APP_ID_RE.test(t) && !a) {
+    aEl.value = t; tEl.value = '';
+    return 'Das war die App-ID, kein Token — ich habe es ins App-ID-Feld verschoben. Prüfe die Felder und klicke erneut.';
+  }
+  return '';
+}
 
 // Agora's own errors are terse English codes — turn the usual suspects into
 // something a player can act on. The raw text is appended small so it can
@@ -5489,6 +5507,8 @@ function readInviteFromUrl() {
 })();
 document.getElementById('invite-btn').addEventListener('click', async () => {
   const err = document.getElementById('jerr');
+  const swapMsg = fixSwappedCredentials();
+  if (swapMsg) { err.textContent = swapMsg; return; }
   const appId = cleanId(document.getElementById('f-appid').value), room = document.getElementById('f-room').value.trim(), token = cleanId(document.getElementById('f-token').value);
   if (!APP_ID_RE.test(appId) || !room) { err.textContent = 'Für den Link zuerst App-ID (32 Zeichen) und Raum-Code eintragen.'; return; }
   const p = new URLSearchParams({a: appId, r: room}); if (token) p.set('t', token);
@@ -5510,6 +5530,8 @@ document.getElementById('invite-btn').addEventListener('click', async () => {
 
 // ══════════ UI EVENTS ══════════
 document.getElementById('join-btn').addEventListener('click', async()=>{
+  const swapMsg=fixSwappedCredentials();
+  if(swapMsg){ document.getElementById('jerr').textContent=swapMsg; return; }
   const appId=cleanId(document.getElementById('f-appid').value);
   const room=document.getElementById('f-room').value.trim();
   const token=cleanId(document.getElementById('f-token').value)||null;
