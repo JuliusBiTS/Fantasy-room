@@ -18,7 +18,12 @@ body{background:var(--dark);color:var(--c);font-family:var(--fm);overflow:hidden
 body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.05) 2px,rgba(0,0,0,0.05) 4px);pointer-events:none;z-index:9000}
 
 /* JOIN */
-#join-overlay{position:fixed;inset:0;background:radial-gradient(ellipse at center,#0d1830,#05070f);display:flex;align-items:center;justify-content:center;z-index:8000;overflow:hidden}
+/* The overlay scrolls (it used to be overflow:hidden, which cut the box off
+   on any screen shorter than the form with no way to reach the connect
+   button). The box centres itself with margin:auto — centred when it fits,
+   top-aligned and scrollable when it doesn't (plain flex centring would
+   clip the top part out of reach). */
+#join-overlay{position:fixed;inset:0;background:radial-gradient(ellipse at center,#0d1830,#05070f);display:flex;z-index:8000;overflow-y:auto;overflow-x:hidden;padding:16px;scrollbar-width:thin;scrollbar-color:rgba(224,184,76,.3) transparent}
 
 
 /* SELF-PREVIEW — check your own camera/mic before joining, so nobody
@@ -35,19 +40,19 @@ body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradie
 .pv-hint{font-size:9px;letter-spacing:1px;color:rgba(224,184,76,0.5);text-transform:uppercase}
 .pv-error{font-size:11px;color:var(--r);margin:-4px 0 12px}
 
-.jbox{width:440px;border:1px solid rgba(224,184,76,0.4);background:var(--card);padding:44px 40px;position:relative;box-shadow:0 0 60px rgba(224,184,76,0.08)}
+.jbox{--jpx:clamp(18px,5vw,40px);--jpy:clamp(16px,4vh,44px);width:min(440px,100%);margin:auto;border:1px solid rgba(224,184,76,0.4);background:var(--card);padding:var(--jpy) var(--jpx);position:relative;box-shadow:0 0 60px rgba(224,184,76,0.08)}
 .jbox::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--c),transparent)}
-.jlogo{text-align:center;margin-bottom:36px}
+.jlogo{text-align:center;margin-bottom:clamp(12px,3.5vh,36px)}
 .jlogo-t{font-family:var(--fd);font-size:22px;font-weight:900;letter-spacing:5px;color:var(--c);text-shadow:0 0 30px var(--c)}
 .jlogo-t2{font-family:var(--fd);font-size:13px;font-weight:700;letter-spacing:9px;color:var(--m);margin-top:4px;text-transform:uppercase}
 .jlogo-s{font-size:11px;letter-spacing:3px;color:rgba(224,184,76,0.35);margin-top:10px;text-transform:uppercase}
-.fg{margin-bottom:16px}
+.fg{margin-bottom:clamp(10px,1.8vh,16px)}
 .fl{display:block;font-size:9px;letter-spacing:3px;color:rgba(224,184,76,0.5);margin-bottom:6px;text-transform:uppercase}
 .fi{width:100%;background:rgba(0,0,0,0.35);border:1px solid rgba(224,184,76,0.22);color:var(--c);font-family:var(--fm);font-size:15px;padding:10px 14px;outline:none;transition:border-color .2s,box-shadow .2s}
 .fi:focus{border-color:rgba(224,184,76,.7);box-shadow:0 0 10px rgba(224,184,76,.15)}
 .fi::placeholder{color:rgba(224,184,76,.22)}
 .fh{font-size:9px;letter-spacing:1px;color:rgba(224,184,76,.28);margin-top:4px}
-.dm-row{display:flex;align-items:center;gap:14px;margin:22px 0;cursor:pointer}
+.dm-row{display:flex;align-items:center;gap:14px;margin:clamp(10px,2vh,22px) 0;cursor:pointer}
 .dm-row input{display:none}
 .tpill{width:44px;height:22px;background:rgba(0,0,0,.5);border:1px solid rgba(58,160,196,.35);border-radius:11px;position:relative;transition:all .25s;flex-shrink:0}
 .tpill::after{content:'';position:absolute;width:15px;height:15px;background:rgba(58,160,196,.4);border-radius:50%;top:3px;left:3px;transition:all .25s}
@@ -58,6 +63,31 @@ body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradie
 .jbtn{width:100%;background:transparent;border:1px solid var(--c);color:var(--c);font-family:var(--fd);font-size:12px;font-weight:700;letter-spacing:5px;padding:15px;cursor:pointer;text-transform:uppercase;transition:all .2s}
 .jbtn:hover{background:rgba(224,184,76,.08);box-shadow:0 0 20px rgba(224,184,76,.18)}
 .jbtn:disabled{opacity:.5;cursor:not-allowed}
+
+/* "Erweitert": everything a returning/invited player never needs to touch
+   (App-ID, token, device pickers, diagnostics, invite link). Closed by
+   default; opened automatically when something is missing or an error
+   happens (see openAdv()). */
+.adv{margin:0 0 12px;border:1px solid rgba(224,184,76,.15)}
+.adv summary{cursor:pointer;list-style:none;padding:9px 12px;font-size:10px;letter-spacing:2px;text-transform:uppercase;color:rgba(224,184,76,.7);display:flex;justify-content:space-between;align-items:center;gap:10px}
+.adv summary::-webkit-details-marker{display:none}
+.adv summary::after{content:'▸';margin-left:auto;color:rgba(224,184,76,.5)}
+.adv[open] summary::after{content:'▾'}
+.adv summary:hover{background:rgba(224,184,76,.05)}
+#adv-state{font-size:9px;letter-spacing:1px;color:rgba(224,184,76,.4)}
+#adv-state.ok{color:var(--g)}
+#adv-state.warn{color:var(--r)}
+.adv-body{padding:14px 12px 2px;border-top:1px solid rgba(224,184,76,.12)}
+/* Error line + connect button stay pinned to the bottom edge of the window
+   while the form scrolls, so "Verbinden" is reachable on any screen size. */
+.jfoot{position:sticky;bottom:0;background:#0d111f;margin:0 calc(-1*var(--jpx)) calc(-1*var(--jpy));padding:10px var(--jpx) var(--jpy);border-top:1px solid rgba(224,184,76,.1)}
+.jfoot #jerr{margin-bottom:8px}
+/* Short screens (small laptops): drop the explanatory small print and tighten up. */
+@media (max-height:820px){ .fh,.jlogo-s{display:none} }
+@media (max-height:700px){
+  .jlogo-t{font-size:18px} .jlogo-t2{font-size:11px;letter-spacing:7px}
+  .fi{padding:8px 12px} .jbtn{padding:12px} .pv-btn{padding:8px;margin-bottom:8px}
+}
 
 /* VIGNETTE — a soft, always-on cinematic frame around the 3D view, on top
    of the ACES-graded render underneath rather than fighting it in shader
@@ -190,19 +220,8 @@ body.locked #crosshair{opacity:1}
 #focus-label{position:absolute;top:8px;left:8px;background:rgba(2,4,12,.75);color:#e0b84c;font-family:var(--fm);font-size:10px;letter-spacing:2px;text-transform:uppercase;padding:4px 8px}
 .focus-hint{position:absolute;bottom:8px;right:8px;background:rgba(2,4,12,.75);color:rgba(224,184,76,.7);font-family:var(--fm);font-size:9px;letter-spacing:1px;text-transform:uppercase;padding:4px 8px}
 
-/* CAMERA GALLERY — small always-on strip everyone can glance at (no need
-   to physically turn toward each avatar), expandable into a full grid.
-   Opt-in/out is per-person and local only; it never changes what anyone
-   else sees. */
-#pip-strip{position:fixed;bottom:24px;right:24px;display:flex;gap:6px;z-index:205;pointer-events:none}
-.pip-tile{position:relative;width:76px;height:57px;background:#111;border:1px solid rgba(224,184,76,.35);overflow:hidden;pointer-events:auto;cursor:pointer;transition:border-color .15s}
-.pip-tile:hover{border-color:var(--c)}
-.pip-tile.speaking{border-color:var(--g);box-shadow:0 0 10px rgba(62,207,110,.5)}
-.pip-tile video{width:100%;height:100%;object-fit:cover;display:block;pointer-events:none}
-.pip-name{position:absolute;left:0;right:0;bottom:0;font-size:8px;letter-spacing:1px;color:#fff;background:rgba(0,0,0,.55);padding:2px 4px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
-#pip-close{position:absolute;top:-8px;right:-8px;width:17px;height:17px;border-radius:50%;background:rgba(2,4,12,.92);border:1px solid rgba(224,184,76,.4);color:rgba(224,184,76,.8);font-size:11px;line-height:15px;text-align:center;cursor:pointer;pointer-events:auto}
-#pip-close:hover{border-color:var(--r);color:var(--r)}
-
+/* CAMERA GALLERY — opened on demand (button / G), a full-screen grid of
+   everyone's camera. (The always-on strip in the corner was removed.) */
 #gallery-panel{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;z-index:220;background:rgba(2,4,12,.88)}
 #gallery-close-hint{font-size:10px;letter-spacing:2px;color:rgba(224,184,76,.55);text-transform:uppercase;margin-bottom:16px}
 #gallery-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:20px;width:min(1900px,96vw);max-height:88vh;overflow-y:auto;padding:4px 24px}
@@ -238,34 +257,19 @@ canvas{display:block}
       <div class="jlogo-s">Sternenhof · Arkane Verbindung</div>
     </div>
     <div class="fg">
-      <label class="fl" for="f-appid">Agora App-ID</label>
-      <input class="fi" id="f-appid" type="text" placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off" spellcheck="false"/>
-      <div class="fh">Kostenlos: agora.io → Neues Projekt → Testing-Mode → App ID kopieren</div>
+      <label class="fl" for="f-name">Dein Name</label>
+      <input class="fi" id="f-name" type="text" placeholder="z. B. dein Charaktername" autocomplete="off" maxlength="24"/>
+      <div class="fh">Wird für alle sichtbar (Namensschild, Lautstärke-Liste, Flüstern-Auswahl)</div>
     </div>
     <div class="fg">
       <label class="fl" for="f-room">Raum-Code</label>
       <input class="fi" id="f-room" type="text" placeholder="sternenhof-sitzung-01" autocomplete="off"/>
       <div class="fh">Alle Spieler müssen denselben Code eingeben</div>
     </div>
-    <div class="fg">
-      <label class="fl" for="f-token">Token (nur falls Projekt ein Zertifikat hat)</label>
-      <input class="fi" id="f-token" type="text" placeholder="optional" autocomplete="off" spellcheck="false"/>
-      <div class="fh">Agora-Konsole → Projekt → "Generate Temp Token" (mit UID 0, für diesen Raum-Code). Leer lassen, wenn das Projekt kein Zertifikat hat.</div>
-    </div>
-    <div class="fg">
-      <label class="fl" for="f-name">Dein Name</label>
-      <input class="fi" id="f-name" type="text" placeholder="z. B. dein Charaktername" autocomplete="off" maxlength="24"/>
-      <div class="fh">Wird für alle sichtbar (Namensschild, Lautstärke-Liste, Flüstern-Auswahl)</div>
-    </div>
     <label class="dm-row">
       <input type="checkbox" id="f-isdm"/>
       <span class="tpill"></span>
       <span class="dlabel">DM-Zugang</span>
-    </label>
-    <label class="dm-row">
-      <input type="checkbox" id="f-diag"/>
-      <span class="tpill"></span>
-      <span class="dlabel">Diagnose-Overlay (nur für dich sichtbar)</span>
     </label>
     <button class="pv-btn" id="preview-btn" type="button">🎥 Kamera &amp; Mikrofon testen</button>
     <div id="preview-box">
@@ -276,16 +280,38 @@ canvas{display:block}
       </div>
     </div>
     <div class="pv-error" id="pv-error"></div>
-    <div class="fg">
-      <label class="fl" for="f-mic">Mikrofon</label>
-      <select class="fi" id="f-mic" style="font-size:13px"><option value="">Standard-Gerät</option></select>
-      <label class="fl" for="f-cam" style="margin-top:8px">Kamera</label>
-      <select class="fi" id="f-cam" style="font-size:13px"><option value="">Standard-Gerät</option></select>
-      <div class="fh">Nur ändern, wenn das Standardgerät nicht passt (z. B. Headset). Gerätenamen erscheinen nach „Kamera &amp; Mikrofon testen".</div>
+    <details class="adv" id="adv">
+      <summary><span>⚙ Erweitert</span><span id="adv-state"></span></summary>
+      <div class="adv-body">
+        <div class="fg">
+          <label class="fl" for="f-appid">Agora App-ID</label>
+          <input class="fi" id="f-appid" type="text" placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off" spellcheck="false"/>
+          <div class="fh">Kostenlos: agora.io → Neues Projekt → Testing-Mode → App ID kopieren</div>
+        </div>
+        <div class="fg">
+          <label class="fl" for="f-token">Token (nur falls Projekt ein Zertifikat hat)</label>
+          <input class="fi" id="f-token" type="text" placeholder="optional" autocomplete="off" spellcheck="false"/>
+          <div class="fh">Agora-Konsole → Projekt → "Generate Temp Token" (mit UID 0, für diesen Raum-Code). Leer lassen, wenn das Projekt kein Zertifikat hat.</div>
+        </div>
+        <div class="fg">
+          <label class="fl" for="f-mic">Mikrofon</label>
+          <select class="fi" id="f-mic" style="font-size:13px"><option value="">Standard-Gerät</option></select>
+          <label class="fl" for="f-cam" style="margin-top:8px">Kamera</label>
+          <select class="fi" id="f-cam" style="font-size:13px"><option value="">Standard-Gerät</option></select>
+          <div class="fh">Nur ändern, wenn das Standardgerät nicht passt (z. B. Headset). Gerätenamen erscheinen nach „Kamera &amp; Mikrofon testen".</div>
+        </div>
+        <label class="dm-row">
+          <input type="checkbox" id="f-diag"/>
+          <span class="tpill"></span>
+          <span class="dlabel">Diagnose-Overlay (nur für dich sichtbar)</span>
+        </label>
+        <button class="pv-btn" id="invite-btn" type="button" title="Erzeugt einen Link, der App-ID, Raum-Code und Token schon eingetragen hat — zum Verschicken an die Gruppe">🔗 Einladungslink kopieren</button>
+      </div>
+    </details>
+    <div class="jfoot">
+      <div id="jerr">&nbsp;</div>
+      <button class="jbtn" id="join-btn">▶ VERBINDEN</button>
     </div>
-    <button class="pv-btn" id="invite-btn" type="button" title="Erzeugt einen Link, der App-ID, Raum-Code und Token schon eingetragen hat — zum Verschicken an die Gruppe">🔗 Einladungslink kopieren</button>
-    <div id="jerr">&nbsp;</div>
-    <button class="jbtn" id="join-btn">▶ VERBINDEN</button>
   </div>
 </div>
 
@@ -345,7 +371,6 @@ canvas{display:block}
   <div id="whisper-list"></div>
 </div>
 
-<div id="pip-strip" style="display:none"></div>
 
 <div id="gallery-panel" style="display:none">
   <div id="gallery-close-hint">Klick daneben, G oder ESC zum Schließen</div>
@@ -778,6 +803,7 @@ const BOOKS = [
       meterTick();
     }catch(e){
       errEl.textContent='Kamera/Mikrofon nicht verfügbar: '+(e.message||'Zugriff verweigert');
+      openAdv(); // device pickers live there
       btn.textContent='🎥 Kamera & Mikrofon testen';
     }
     btn.disabled=false;
@@ -1164,14 +1190,11 @@ const tokenRaycaster = new THREE.Raycaster();
 let focusedUid = null;
 
 // ══════════ CAMERA GALLERY ══════════
-// A small always-on strip of everyone's camera, expandable into a full
-// grid — lets the DM (or anyone) keep track of reactions across several
-// players without physically turning to face each avatar in turn. Purely
-// client-side, reuses the same videoEl each user already has for the
-// focus-view feature above. Opt-out is per-person and local (localStorage),
-// never broadcast — it only changes what that one person sees.
-const PIP_KEY = 'fantasyRoomPipEnabled';
-let pipEnabled = localStorage.getItem(PIP_KEY) !== 'false'; // on by default
+// A full-screen grid of everyone's camera, opened on demand — lets the DM
+// (or anyone) keep track of reactions across several players without
+// physically turning to face each avatar in turn. Purely client-side, reuses
+// the same videoEl each user already has for the focus-view feature above.
+// (There used to be an always-on strip in the corner too; removed.)
 let galleryOpen = false;
 let speakingUids = new Set(); // uids (as strings) Agora currently reports as talking
 
@@ -3766,7 +3789,7 @@ function attachRemoteVideo(uid, ru) {
     attachVideoToAvatar(users[uid],vel);
     users[uid].videoEl=vel; // reused directly for the focus overlay, not just the 3D texture
     if (focusedUid===uid) setFocus(uid); // pick up mid-focus if their video just (re)connected
-    renderPip(); if (galleryOpen) renderGallery(); // this user's tile only exists once videoEl is set
+    if (galleryOpen) renderGallery(); // this user's tile only exists once videoEl is set
   } catch(e){}
 }
 
@@ -3904,7 +3927,7 @@ function setFocus(uid) {
 }
 
 // Anyone currently streaming video gets a tile — local included, so
-// players can see themselves in the PIP strip and gallery too, same as
+// players can see themselves in the gallery too, same as
 // everyone else. Someone on mic-only has nothing to show, and (matching
 // setFocus above) that's not worth a dedicated empty-state placeholder.
 function galleryEntries() {
@@ -3919,49 +3942,10 @@ function makeGalleryVideo(u) {
   return vid;
 }
 
-function renderPip() {
-  const strip=document.getElementById('pip-strip');
-  const entries=galleryEntries();
-  if (!pipEnabled || !entries.length) { strip.style.display='none'; return; }
-  strip.innerHTML='';
-  entries.forEach(([uid,u])=>{
-    const tile=document.createElement('div');
-    tile.className='pip-tile'+(speakingUids.has(String(uid))?' speaking':'');
-    tile.dataset.uid=uid;
-    const name=document.createElement('div');
-    name.className='pip-name'; name.textContent=u.name||'Spieler';
-    tile.appendChild(makeGalleryVideo(u)); tile.appendChild(name);
-    tile.addEventListener('click', openGallery);
-    strip.appendChild(tile);
-  });
-  const closeBtn=document.createElement('div');
-  closeBtn.id='pip-close'; closeBtn.textContent='×';
-  closeBtn.title='Kamera-Galerie für mich deaktivieren';
-  closeBtn.addEventListener('click', e=>{ e.stopPropagation(); disablePip(); });
-  strip.appendChild(closeBtn);
-  strip.style.display='flex';
-}
-
-// Local, per-person opt-out — deliberately never broadcast. Someone
-// finding this distracting shouldn't have to convince anyone else to
-// turn it off, and it shouldn't be possible to turn it off FOR someone
-// else either.
-function disablePip() {
-  pipEnabled=false;
-  localStorage.setItem(PIP_KEY,'false');
-  closeGallery();
-  renderPip();
-}
-
-// The gallery button/hotkey doubles as "turn it back on" — always re-
-// enables pipEnabled, so opting out from the small × is never a dead end.
 function openGallery() {
-  pipEnabled=true;
-  localStorage.setItem(PIP_KEY,'true');
   galleryOpen=true;
   renderGallery();
   document.getElementById('gallery-panel').style.display='flex';
-  renderPip();
 }
 
 function closeGallery() {
@@ -4906,7 +4890,7 @@ async function initAgora(appId, room, myName, asDM, token) {
   agoraClient.enableAudioVolumeIndicator();
   agoraClient.on('volume-indicator', volumes => {
     speakingUids = new Set(volumes.filter(v=>v.level>15).map(v=>String(v.uid)));
-    document.querySelectorAll('.pip-tile,.gal-tile').forEach(el=>{
+    document.querySelectorAll('.gal-tile').forEach(el=>{
       el.classList.toggle('speaking', speakingUids.has(el.dataset.uid));
     });
   });
@@ -4980,7 +4964,6 @@ async function initAgora(appId, room, myName, asDM, token) {
       if (whisperTarget) broadcastWhisper(true, whisperTarget);
       if (isDM) dmResyncRoom();
       if (document.getElementById('vol-panel').style.display==='block') renderVolPanel();
-      renderPip();
     }
     if (mediaType==='video') {
       attachRemoteVideo(uid, ru);
@@ -5047,7 +5030,7 @@ async function initAgora(appId, room, myName, asDM, token) {
     }
     if(document.getElementById('vol-panel').style.display==='block') renderVolPanel();
     if(focusedUid===ru.uid) setFocus(null); // don't leave a frozen video of someone who just left
-    renderPip(); if (galleryOpen) renderGallery();
+    if (galleryOpen) renderGallery();
     // Their graph is already gone above — nothing to restore, just drop the
     // bookkeeping. If THEY were my whisper target, don't sit toggled on
     // whispering into the void.
@@ -5302,16 +5285,24 @@ const APP_ID_RE = /^[0-9a-f]{32}$/i;
 // the App-ID field by mistake. If the two fields are swapped/misplaced, fix it
 // and say so, instead of just rejecting a perfectly valid credential.
 const TOKEN_RE = /^00\d[A-Za-z0-9+\/=_-]{40,}$/;
+function openAdv() { const d = document.getElementById('adv'); if (d) d.open = true; }
+function updateAdvState() {
+  const el = document.getElementById('adv-state'); if (!el) return;
+  const okId = APP_ID_RE.test(cleanId(document.getElementById('f-appid').value));
+  const tok = !!cleanId(document.getElementById('f-token').value);
+  el.className = okId ? 'ok' : 'warn';
+  el.textContent = okId ? '✓ App-ID gesetzt' + (tok ? ' · Token' : '') : '⚠ App-ID fehlt';
+}
 function fixSwappedCredentials() {
   const aEl = document.getElementById('f-appid'), tEl = document.getElementById('f-token');
   const a = cleanId(aEl.value), t = cleanId(tEl.value);
   if (TOKEN_RE.test(a) && !APP_ID_RE.test(a)) {
     if (!t) tEl.value = a;
-    aEl.value = ''; aEl.focus();
+    aEl.value = ''; openAdv(); updateAdvState(); aEl.focus();
     return 'Das war ein Token, keine App-ID — ich habe es ins Token-Feld verschoben. Bitte jetzt noch die App-ID eintragen (32 Zeichen, Agora-Konsole → Projekt → App ID).';
   }
   if (APP_ID_RE.test(t) && !a) {
-    aEl.value = t; tEl.value = '';
+    aEl.value = t; tEl.value = ''; openAdv(); updateAdvState();
     return 'Das war die App-ID, kein Token — ich habe es ins App-ID-Feld verschoben. Prüfe die Felder und klicke erneut.';
   }
   return '';
@@ -5459,8 +5450,7 @@ function attachLocalVideoEl() {
     vel.srcObject = new MediaStream([localVideo.getMediaStreamTrack()]);
     vel.play().catch(()=>{});
     attachVideoToAvatar(users[localUID], vel);
-    users[localUID].videoEl = vel; // reused for PIP/gallery, same as remote users — see the 'user-published' handler
-    renderPip();
+    users[localUID].videoEl = vel; // reused for the gallery, same as remote users — see the 'user-published' handler
   } catch(e) {}
 }
 async function startCamLater() {
@@ -5504,13 +5494,17 @@ function readInviteFromUrl() {
   set('f-appid', inv.appId || prefs.appId);
   set('f-room',  inv.room  || prefs.room);
   set('f-token', inv.token);
+  updateAdvState();
+  // closed by default; open right away if there's no usable App-ID yet
+  if (!APP_ID_RE.test(cleanId(document.getElementById('f-appid').value))) openAdv();
+  ['f-appid','f-token'].forEach(id => document.getElementById(id).addEventListener('input', updateAdvState));
 })();
 document.getElementById('invite-btn').addEventListener('click', async () => {
   const err = document.getElementById('jerr');
   const swapMsg = fixSwappedCredentials();
   if (swapMsg) { err.textContent = swapMsg; return; }
   const appId = cleanId(document.getElementById('f-appid').value), room = document.getElementById('f-room').value.trim(), token = cleanId(document.getElementById('f-token').value);
-  if (!APP_ID_RE.test(appId) || !room) { err.textContent = 'Für den Link zuerst App-ID (32 Zeichen) und Raum-Code eintragen.'; return; }
+  if (!APP_ID_RE.test(appId) || !room) { openAdv(); err.textContent = 'Für den Link zuerst App-ID (32 Zeichen) und Raum-Code eintragen.'; return; }
   const p = new URLSearchParams({a: appId, r: room}); if (token) p.set('t', token);
   const link = location.origin + location.pathname + '#' + p.toString();
   try { await navigator.clipboard.writeText(link); err.textContent = 'Einladungslink kopiert ✓ — in den Gruppenchat einfügen.'; }
@@ -5540,7 +5534,7 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
   const typedName=document.getElementById('f-name').value.trim();
   const name=typedName||(isDM?'DM':'Spieler');
   const err=document.getElementById('jerr');
-  if(!APP_ID_RE.test(appId)){err.textContent='Die App-ID muss genau 32 Zeichen (0–9, a–f) haben — bitte noch einmal aus der Agora-Konsole kopieren (ohne Leerzeichen).';return;}
+  if(!APP_ID_RE.test(appId)){openAdv(); updateAdvState(); err.textContent='Die App-ID muss genau 32 Zeichen (0–9, a–f) haben — bitte noch einmal aus der Agora-Konsole kopieren (ohne Leerzeichen).';return;}
   if(!room){err.textContent='Bitte Raum-Code eingeben.';return;}
   err.textContent='';
   saveJoinPrefs({appId, room, mic:chosenDeviceId('f-mic')||'', cam:chosenDeviceId('f-cam')||''});
@@ -5585,6 +5579,7 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
     try{ if(agoraClient) await agoraClient.leave(); }catch(_){}
     document.getElementById('join-overlay').style.display='flex';
     btn.disabled=false; btn.textContent='▶ VERBINDEN';
+    openAdv(); // let them see/fix App-ID, token or device choice right away
     const tech=String((e&&e.message)||e||'').replace(/s+/g,' ').slice(0,140);
     err.textContent=describeAgoraError(e)+(tech?'  ['+tech+']':'');
   }
